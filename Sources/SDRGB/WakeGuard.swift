@@ -87,7 +87,7 @@ final class WakeGuard: ObservableObject {
         if connection == nil {
             let c = NSXPCConnection(machServiceName: HelperConstants.machServiceName, options: .privileged)
             c.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
-            c.invalidationHandler = { [weak self] in Task { @MainActor in self?.connection = nil } }
+            c.invalidationHandler = { [weak self] in Task { @MainActor [weak self] in self?.connection = nil } }
             c.resume()
             connection = c
         }
@@ -96,7 +96,7 @@ final class WakeGuard: ObservableObject {
 
     private func callHelper(_ enabled: Bool) {
         let proxy = helperProxy { [weak self] in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.lidClosedBusy = false
                 self?.lidClosedError = "Couldn't reach the privileged helper."
             }
@@ -123,7 +123,7 @@ final class WakeGuard: ObservableObject {
     /// Recover a wedged device without a reboot. Passwordless through the helper
     /// (root) after the one-time approval; unsigned dev builds use a one-off
     /// admin prompt. Never blocks the UI: a 30 s timeout always finishes it.
-    func repair(_ completion: @escaping () -> Void) {
+    func repair(_ completion: @escaping @MainActor () -> Void) {
         guard !repairBusy else { return }
         repairBusy = true
 
@@ -137,7 +137,7 @@ final class WakeGuard: ObservableObject {
         }
         if status == .enabled,
            let proxy = helperProxy({ [weak self] in
-               Task { @MainActor in self?.finishRepair(completion) }
+               Task { @MainActor [weak self] in self?.finishRepair(completion) }
            }) {
             proxy.repair { _ in Task { @MainActor in self.finishRepair(completion) } }
             // UI-safety: finish even if the helper/device hangs.
@@ -153,7 +153,7 @@ final class WakeGuard: ObservableObject {
         }
     }
 
-    private func finishRepair(_ completion: @escaping () -> Void) {
+    private func finishRepair(_ completion: @escaping @MainActor () -> Void) {
         guard repairBusy else { return }   // run once (reply OR timeout OR error)
         repairBusy = false
         completion()
@@ -161,7 +161,7 @@ final class WakeGuard: ObservableObject {
 
     /// Auto-repair: only proceeds if it can run **silently** (helper already
     /// approved) — never prompts while the user is away.
-    func autoRepairIfPossible(_ completion: @escaping () -> Void) {
+    func autoRepairIfPossible(_ completion: @escaping @MainActor () -> Void) {
         guard !repairBusy, helperService.status == .enabled else { completion(); return }
         repair(completion)
     }
@@ -197,7 +197,7 @@ final class WakeGuard: ObservableObject {
 
     private func sudoFallback(_ enabled: Bool) {
         let value = enabled ? "1" : "0"
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var message: String?
             var ok = (WakeGuard.runSudo(value) == .ok)
             if !ok {
@@ -212,10 +212,11 @@ final class WakeGuard: ObservableObject {
                 }
             }
             let actual = WakeGuard.readSleepDisabled()
-            Task { @MainActor in
-                self.lidClosedBusy = false
-                self.lidClosed = actual
-                self.lidClosedError = message
+            let finalMessage = message
+            Task { @MainActor [weak self] in
+                self?.lidClosedBusy = false
+                self?.lidClosed = actual
+                self?.lidClosedError = finalMessage
             }
         }
     }

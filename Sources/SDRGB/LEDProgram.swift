@@ -38,18 +38,18 @@ enum LEDProgram {
 
     // MARK: - Presets
 
-    struct Preset: Identifiable {
+    struct Preset: Identifiable, Sendable {
         let id: String
         let name: String
         let symbol: String
         /// Builds the program for a device's LED count, brightness, whether it's
         /// animated, and a 0…1 speed (only meaningful for animatable presets).
-        let make: (_ ledCount: Int, _ brightness: Int, _ animated: Bool, _ speed: Double) -> String
+        let make: @Sendable (_ ledCount: Int, _ brightness: Int, _ animated: Bool, _ speed: Double) -> String
         /// True if this preset has distinct animated and static forms (so the UI
         /// can show the Animated/Speed controls as meaningful for it).
         let animatable: Bool
         init(_ id: String, _ name: String, _ symbol: String, animatable: Bool = false,
-             _ make: @escaping (Int, Int, Bool, Double) -> String) {
+             _ make: @escaping @Sendable (Int, Int, Bool, Double) -> String) {
             self.id = id; self.name = name; self.symbol = symbol
             self.animatable = animatable; self.make = make
         }

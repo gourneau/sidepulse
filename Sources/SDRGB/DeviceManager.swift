@@ -207,7 +207,7 @@ final class DeviceManager: ObservableObject {
         // Backstop poll (power notifications can lag): react within ~3s. Cheap —
         // just a power read, no device I/O.
         let t = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.powerSourceChanged() }
+            Task { @MainActor [weak self] in self?.powerSourceChanged() }
         }
         t.tolerance = 1
         RunLoop.main.add(t, forMode: .common)
@@ -259,7 +259,7 @@ final class DeviceManager: ObservableObject {
     func rescan() {
         ioQueue.async { [weak self] in
             let found = DeviceManager.scanVolumes()
-            Task { @MainActor in self?.applyScan(found) }
+            Task { @MainActor [weak self] in self?.applyScan(found) }
         }
     }
 
@@ -346,7 +346,7 @@ final class DeviceManager: ObservableObject {
         }
         pendingWrite?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            Task { @MainActor in _ = self?.deliver(program, kind: .liveLeds) }
+            Task { @MainActor [weak self] in _ = self?.deliver(program, kind: .liveLeds) }
         }
         pendingWrite = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
@@ -377,7 +377,7 @@ final class DeviceManager: ObservableObject {
     private func startMetrics() {
         sampleMetrics()
         let t = Timer(timeInterval: cycleInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.sampleMetrics()
                 self?.showInfoFrame(advance: true)
             }
@@ -430,7 +430,7 @@ final class DeviceManager: ObservableObject {
     private func startHeartbeat() {
         heartbeatTimer?.invalidate()
         let t = Timer(timeInterval: Self.heartbeatInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.beat() }
+            Task { @MainActor [weak self] in self?.beat() }
         }
         t.tolerance = 5
         RunLoop.main.add(t, forMode: .common)
@@ -440,7 +440,7 @@ final class DeviceManager: ObservableObject {
 
     private func startTick() {
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.now = Date() }
+            Task { @MainActor [weak self] in self?.now = Date() }
         }
         t.tolerance = 0.5
         RunLoop.main.add(t, forMode: .common)
@@ -479,7 +479,7 @@ final class DeviceManager: ObservableObject {
         inFlightVolumes.insert(volume)
         ioQueue.async { [weak self] in
             let result = op()
-            Task { @MainActor in self?.finishIO(kind: kind, volume: volume, result: result) }
+            Task { @MainActor [weak self] in self?.finishIO(kind: kind, volume: volume, result: result) }
         }
     }
 
@@ -545,7 +545,7 @@ final class DeviceManager: ObservableObject {
         inFlightVolumes.insert(vol)
         ioQueue.async { [weak self] in
             let (result, text) = DeviceManager.readContents(url)
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.inFlightVolumes.remove(vol)
                 switch result {
@@ -570,7 +570,7 @@ final class DeviceManager: ObservableObject {
         if needsRepair() {
             if autoRepairTimer == nil && !autoRepairedThisEpisode {
                 let t = Timer(timeInterval: 30, repeats: false) { [weak self] _ in
-                    Task { @MainActor in self?.fireAutoRepair() }
+                    Task { @MainActor [weak self] in self?.fireAutoRepair() }
                 }
                 t.tolerance = 5
                 RunLoop.main.add(t, forMode: .common)
