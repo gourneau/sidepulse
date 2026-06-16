@@ -2,16 +2,22 @@
 
 A tiny macOS **menu-bar app** to control [sdstatusbar](https://github.com/unrelatedlabs/sdstatusbar)
 LED devices — and, most importantly, a **keepalive that touches each device every
-2 minutes** so it stays alive.
+minute** so it stays alive.
 
 ## What it does
 
 - Lives in the menu bar (lightbulb icon), no dock icon.
-- **Keepalive**: every 2 minutes it gently **reads** `STATUS.TXT` on every
-  connected device to keep the USB/SD link alive. A read keeps the link active
-  without the wedge risk of writing, and never disturbs the LED animation. (If a
-  read turns out not to keep your firmware awake, that's the one thing to revisit
-  — see Fault tolerance below.)
+- **Keepalive**: every minute it **writes** a timestamp to `KEEPALIVE.TXT` on
+  every connected device — a dedicated file the firmware never parses, so the LED
+  animation is never disturbed. A write is more "activity" than a read, which the
+  device's firmware needs to stay awake. Click the **heart** in the header to see
+  the keepalive log (last 24h).
+- **Self-heal**: after each keepalive (and after the Mac wakes), if the device has
+  reset itself and reverted `LEDS.TXT` to its firmware default, the app silently
+  re-applies the last program — so the LEDs come back without any user action.
+  This is the fix for "woke up and the LEDs were off."
+- **Activity log**: click the header **status dot** for the last 24h of events
+  (updates, warnings, errors, repairs); click the **heart** for keepalive writes.
 - **Color** tab: an inline color editor (swatches + RGB sliders) + brightness.
   Updates **live** as you drag — no Apply button. Plus an Off button.
 - **Per-LED** tab: tap an LED to select it, then edit its color live (8 LEDs for
@@ -63,7 +69,8 @@ contain that:
   only writes when the displayed bar changes.
 - **Single instance.** A second copy won't launch (concurrent writers were a big
   part of what wedged the device).
-- **Keepalive is a read, not a write** (see above).
+- **Keepalive writes one small file** (`KEEPALIVE.TXT`, ~40 bytes) once a minute —
+  bounded, single-flight, and isolated like every other write.
 
 Maintenance: `SDRGB.app/Contents/MacOS/SDRGB --unregister-login` removes the
 launch-at-login item without starting the app or touching any device.

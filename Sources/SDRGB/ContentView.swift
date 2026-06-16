@@ -139,6 +139,21 @@ struct ContentView: View {
         }
     }
 
+    /// Open the 24h activity window (pre-filtered) and bring it to the front,
+    /// same front-bring-up dance as the spec window.
+    private func openActivity(_ filter: ActivityFilter) {
+        device.activityFilter = filter
+        NSApp.setActivationPolicy(.regular)
+        openWindow(id: "activity")
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            if let w = NSApp.windows.first(where: { $0.title == "SDRGB Activity" }) {
+                w.makeKeyAndOrderFront(nil)
+                w.orderFrontRegardless()
+            }
+        }
+    }
+
     // MARK: - Live sending
 
     private func liveSend() {
@@ -172,7 +187,9 @@ struct ContentView: View {
                     .overlay(Circle().stroke(.quaternary))
                     .scaleEffect(statusFlash ? 1.8 : 1.0)
                     .animation(.easeOut(duration: 0.45), value: statusFlash)
-                    .help(statusTooltip)
+                    .help(statusTooltip + " · click for activity")
+                    .pointingCursor()
+                    .onTapGesture { openActivity(.events) }
 
                 deviceLabel
 
@@ -229,8 +246,15 @@ struct ContentView: View {
                        : .default,
                        value: heartBeating)
             .onAppear { heartBeating = true }
+            .onChange(of: connected) { nowConnected in
+                // Restart the beat animation when a device (re)connects after the
+                // view already appeared — otherwise it stays frozen at rest.
+                if nowConnected { heartBeating = false
+                    DispatchQueue.main.async { heartBeating = true } }
+            }
             .help(heartbeatDetail)
-            .onTapGesture { device.beatNow() }
+            .pointingCursor()
+            .onTapGesture { openActivity(.keepalive) }
     }
 
     /// Header gear menu for app-level settings (no longer at the bottom of tabs).
@@ -258,13 +282,13 @@ struct ContentView: View {
 
     private var heartbeatDetail: String {
         guard !device.devices.isEmpty else { return "No device mounted" }
-        var parts = ["Device kept alive (every 2 min)"]
+        var parts = ["Device kept alive (every 1 min)"]
         if let last = device.lastHeartbeat { parts.append("last \(relative(last))") }
         if let next = device.nextHeartbeat {
             let secs = max(0, Int(next.timeIntervalSince(device.now)))
             parts.append(String(format: "next %d:%02d", secs / 60, secs % 60))
         }
-        parts.append("click to ping")
+        parts.append("click for keepalive log")
         return parts.joined(separator: " · ")
     }
 
@@ -534,6 +558,10 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(awakeTitle).font(.callout.bold())
                     Text(awakeSubtitle).font(.caption2).foregroundStyle(.secondary)
+                    if let since = wake.awakeSince {
+                        Text("Keeping awake for \(awakeDuration(since))")
+                            .font(.caption2.monospacedDigit()).foregroundStyle(.green)
+                    }
                 }
             }
             .help(awakeTitle + " — " + awakeSubtitle)
@@ -599,6 +627,15 @@ struct ContentView: View {
         return .gray
     }
 
+    /// Human "1h 23m" / "4m 12s" since keep-awake turned on. Driven by device.now.
+    private func awakeDuration(_ since: Date) -> String {
+        let secs = max(0, Int(device.now.timeIntervalSince(since)))
+        let h = secs / 3600, m = (secs % 3600) / 60, s = secs % 60
+        if h > 0 { return "\(h)h \(m)m" }
+        if m > 0 { return "\(m)m \(s)s" }
+        return "\(s)s"
+    }
+
     private func bindingForLED(_ i: Int) -> Binding<Color> {
         Binding(
             get: { i < perLEDColors.count ? perLEDColors[i] : .white },
@@ -610,5 +647,14 @@ struct ContentView: View {
                 if i < perLEDColors.count { perLEDColors[i] = newValue }
             }
         )
+    }
+}
+
+extension View {
+    /// Show the pointing-hand cursor on hover so users know the view is clickable.
+    func pointingCursor() -> some View {
+        onHover { inside in
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
     }
 }

@@ -9,7 +9,7 @@ struct SDRGBApp: App {
     init() {
         // Make this app's native tooltips (.help) pop almost instantly instead of
         // the ~1.5s system default. Per-app only (our UserDefaults domain).
-        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 80])
+        UserDefaults.standard.set(80, forKey: "NSInitialToolTipDelay")
 
         // Safe maintenance flag: remove the login item and quit WITHOUT starting
         // the app or touching any device volume. Runs before the DeviceManager
@@ -42,6 +42,11 @@ struct SDRGBApp: App {
 
         Window("LEDS.TXT Format", id: "spec") {
             SpecView()
+        }
+        .windowResizability(.contentSize)
+
+        Window("SDRGB Activity", id: "activity") {
+            ActivityView().environmentObject(device)
         }
         .windowResizability(.contentSize)
     }

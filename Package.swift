@@ -12,6 +12,12 @@ let package = Package(
             name: "SDRGBShared",
             path: "Sources/SDRGBShared"
         ),
+        // Tiny ObjC shim to read NSXPCConnection's audit token (for unforgeable
+        // client validation in the helper — PIDs can be reused, tokens can't).
+        .target(
+            name: "XPCAuditToken",
+            path: "Sources/XPCAuditToken"
+        ),
         // The menu-bar app.
         .executableTarget(
             name: "SDRGB",
@@ -21,7 +27,7 @@ let package = Package(
         // The privileged root LaunchDaemon (installed via SMAppService).
         .executableTarget(
             name: "SDRGBHelper",
-            dependencies: ["SDRGBShared"],
+            dependencies: ["SDRGBShared", "XPCAuditToken"],
             path: "Sources/SDRGBHelper"
         )
     ]

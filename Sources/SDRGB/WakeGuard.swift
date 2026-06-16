@@ -19,9 +19,17 @@ final class WakeGuard: ObservableObject {
     static let shared = WakeGuard()
 
     @Published var keepAwake = false {
-        didSet { keepAwake ? createAssertion() : releaseAssertion() }
+        didSet { keepAwake ? createAssertion() : releaseAssertion(); updateAwakeSince() }
     }
-    @Published private(set) var lidClosed = false
+    @Published private(set) var lidClosed = false { didSet { updateAwakeSince() } }
+    /// When keep-awake (either kind) became active — for the "awake for …" display.
+    @Published private(set) var awakeSince: Date?
+
+    private func updateAwakeSince() {
+        let active = keepAwake || lidClosed
+        if active, awakeSince == nil { awakeSince = Date() }
+        else if !active { awakeSince = nil }
+    }
     @Published private(set) var lidClosedBusy = false
     @Published private(set) var lidClosedError: String?
 
@@ -173,9 +181,6 @@ final class WakeGuard: ObservableObject {
         for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null || true; done
         sleep 1
         for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null || true; done
-        for id in $(/usr/sbin/diskutil list | /usr/bin/awk '/SDRGB|USBDOT/{print $NF}'); do
-          /usr/sbin/diskutil mountDisk "$id" 2>/dev/null || true
-        done
         exit 0
         """
         let tmp = NSTemporaryDirectory() + "sdrgb-repair-\(UUID().uuidString).sh"

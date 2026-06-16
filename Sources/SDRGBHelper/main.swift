@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import SDRGBShared
+import XPCAuditToken
 
 let helperVersion = "1.0"
 
@@ -34,17 +35,13 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
 
     func repair(reply: @escaping (String) -> Void) {
         // Root, so no sudo needed. Kill the hung FAT driver, force-unmount any
-        // wedged mounts, then remount — by volume name AND by mounting the whole
-        // disk by its identifier (more reliable; `diskutil mount disk7`).
+        // wedged mounts, then remount by exact volume name (SDRGB/USBDOT).
         let script = """
         /usr/bin/pkill -9 -f 'com.apple.fskit.msdos' 2>/dev/null
         sleep 1
         for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null; done
         sleep 1
         for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null; done
-        for id in $(/usr/sbin/diskutil list | /usr/bin/awk '/SDRGB|USBDOT/{print $NF}'); do
-          /usr/sbin/diskutil mountDisk "$id" 2>/dev/null
-        done
         exit 0
         """
         reply(run("/bin/sh", ["-c", script]))
@@ -70,8 +67,10 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     /// this helper (Team read from our own signature — not hardcoded).
     static func isValidClient(_ connection: NSXPCConnection) -> Bool {
         guard let requirementText = clientRequirement() else { return false }
-        let pid = connection.processIdentifier
-        let attrs = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
+        // Validate by audit token, not PID: a PID can be recycled to a different
+        // process between connect and check, but the audit token cannot be forged.
+        guard let tokenData = SDRGBAuditToken(connection) else { return false }
+        let attrs = [kSecGuestAttributeAudit: tokenData] as CFDictionary
         var code: SecCode?
         guard SecCodeCopyGuestWithAttributes(nil, attrs, SecCSFlags(), &code) == errSecSuccess,
               let code else { return false }
