@@ -571,10 +571,12 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(awakeTitle).font(.callout.bold())
                     Text(awakeSubtitle).font(.caption2).foregroundStyle(.secondary)
-                    if let since = wake.awakeSince {
-                        Text("Keeping awake for \(awakeDuration(since))")
-                            .font(.caption2.monospacedDigit()).foregroundStyle(.green)
-                    }
+                    // Always present (just changes text) so turning keep-awake on
+                    // doesn't insert a line and reflow the tab. Monospaced digits
+                    // keep the counter from jiggling as the numbers change.
+                    Text(awakeDurationLine)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(wake.awakeSince == nil ? Color.secondary : Color.green)
                 }
             }
             .help(awakeTitle + " — " + awakeSubtitle)
@@ -638,6 +640,13 @@ struct ContentView: View {
         if wake.lidClosed { return .orange }
         if wake.keepAwake { return .green }
         return .gray
+    }
+
+    /// The always-present third status line: a live counter when keeping awake,
+    /// a neutral label otherwise (so the layout never reflows on toggle).
+    private var awakeDurationLine: String {
+        if let since = wake.awakeSince { return "Keeping awake for \(awakeDuration(since))" }
+        return "Not keeping awake"
     }
 
     /// Human "1h 23m" / "4m 12s" since keep-awake turned on. Driven by device.now.
