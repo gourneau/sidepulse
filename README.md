@@ -117,19 +117,25 @@ register otherwise). `scripts/package_app.sh` signs both with it + hardened runt
 
 ## Shipping (Developer ID + notarized)
 
+**One command** (build → sign → notarize → staple → zip → GitHub prerelease):
+
 ```sh
-# build + sign (uses the Developer ID identity in package_app.sh)
-scripts/package_app.sh
-
-# one-time: store notary credentials
-xcrun notarytool store-credentials sdrgb-notary \
-  --apple-id "<your apple id>" --team-id 8LL2JEMH4P --password "<app-specific-password>"
-
-# notarize + staple
-ditto -c -k --keepParent build/SDRGB.app build/SDRGB.zip
-xcrun notarytool submit build/SDRGB.zip --keychain-profile sdrgb-notary --wait
-xcrun stapler staple build/SDRGB.app
+scripts/release.sh v0.1.0-beta.3 ["optional notes"]
 ```
+
+It uses a stored notarytool keychain profile named `sdrgb-notary` (set up once):
+
+```sh
+xcrun notarytool store-credentials sdrgb-notary \
+  --key AuthKey_XXXXXX.p8 --key-id XXXXXX --issuer <issuer-uuid>
+```
+
+If no profile exists, `release.sh` falls back to an `AuthKey_*.p8` in the repo root
+plus `ISSUER_ID=<uuid>` in `.env` (both gitignored).
+
+There's also a CI path: pushing a `v*` tag runs `.github/workflows/release.yml`,
+which does the same on a macOS runner using repo secrets. Either works; the script
+is handy when your Mac is newer than the GitHub runners.
 
 Distribute the stapled `SDRGB.app` (e.g. zipped or in a DMG). This is a Developer
 ID / direct-download app — the privileged helper is **not** compatible with the
