@@ -37,15 +37,6 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-
-            // One fixed spot for hover details (dot / heart) — no floating bubbles.
-            Text(hoverInfo ?? " ")
-                .font(.caption2)
-                .foregroundStyle(hoverInfo == nil ? .clear : .secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
             Divider()
 
             Picker("", selection: $tab) {
@@ -166,9 +157,23 @@ struct ContentView: View {
                     .animation(.easeOut(duration: 0.45), value: statusFlash)
                     .onHover { hoverInfo = $0 ? statusTooltip : nil }
 
-                deviceLabel
+                // Same slot shows hover details (no extra/empty line).
+                if let info = hoverInfo {
+                    Text(info).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
+                } else {
+                    deviceLabel
+                }
 
                 Spacer()
+
+                if device.devices.isEmpty {
+                    Button { device.reconnect() } label: {
+                        if device.reconnectBusy { ProgressView().controlSize(.mini) }
+                        else { Text("Reconnect").font(.caption) }
+                    }
+                    .disabled(device.reconnectBusy)
+                }
 
                 settingsMenu
 
@@ -204,11 +209,13 @@ struct ContentView: View {
 
     /// Beating heart in the header (keepalive). Hover for last/next details.
     private var heartView: some View {
-        Image(systemName: "heart.fill")
-            .foregroundStyle(device.devices.isEmpty ? Color.gray : Color.pink)
-            .scaleEffect(device.devices.isEmpty ? 1.0 : (heartBeating ? 1.15 : 0.9))
-            .animation(device.devices.isEmpty ? .default
-                       : .easeInOut(duration: 0.85).repeatForever(autoreverses: true),
+        let connected = !device.devices.isEmpty
+        return Image(systemName: connected ? "heart.fill" : "heart.slash.fill")
+            .foregroundStyle(connected ? Color.pink : Color.red)
+            .scaleEffect(connected ? (heartBeating ? 1.15 : 0.9) : 1.0)
+            .animation(connected
+                       ? .easeInOut(duration: 0.85).repeatForever(autoreverses: true)
+                       : .default,
                        value: heartBeating)
             .onAppear { heartBeating = true }
             .onHover { hoverInfo = $0 ? heartbeatDetail : nil }
@@ -218,6 +225,11 @@ struct ContentView: View {
     /// Header gear menu for app-level settings (no longer at the bottom of tabs).
     private var settingsMenu: some View {
         Menu {
+            Button { device.reconnect() } label: {
+                Label("Reconnect / repair device", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(device.reconnectBusy)
+            Divider()
             Toggle("Launch at login", isOn: Binding(
                 get: { loginEnabled },
                 set: { loginEnabled = LoginItem.setEnabled($0) }

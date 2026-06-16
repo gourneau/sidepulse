@@ -54,6 +54,8 @@ final class DeviceManager: ObservableObject {
     @Published private(set) var status: AppStatus?
     /// The program currently on the selected device's LEDS.TXT (read on demand).
     @Published private(set) var currentProgram: String?
+    /// True while a reconnect/repair is running.
+    @Published private(set) var reconnectBusy = false
 
     private func setStatus(_ level: AppStatus.Level, _ text: String) {
         status = AppStatus(level: level, text: text, date: Date())
@@ -503,6 +505,65 @@ final class DeviceManager: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - Reconnect / repair a stuck volume
+
+    /// Best-effort repair without a reboot: force-unmount any wedged device
+    /// volume, then remount it. Runs in timeout-protected subprocesses so a
+    /// wedged device can't hang the app. (A true USB-level wedge may still need a
+    /// physical replug — there's no supported full-USB reset in userspace.)
+    func reconnect() {
+        guard !reconnectBusy else { return }
+        reconnectBusy = true
+        setStatus(.info, "Reconnecting the device…")
+        ioQueue.async { [weak self] in
+            DeviceManager.runReconnect()
+            Task { @MainActor in
+                guard let self else { return }
+                self.reconnectBusy = false
+                self.stuckVolumes.removeAll()
+                self.inFlightVolumes.removeAll()
+                self.rescan()
+                // Give the remount a moment, then report based on what's present.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) {
+                    if self.devices.isEmpty {
+                        self.setStatus(.warning, "Couldn’t reconnect — try unplugging and replugging.")
+                    } else {
+                        self.setStatus(.success, "Reconnected")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Root repair (one admin prompt): kill the hung `com.apple.fskit.msdos` FAT
+    /// driver — the actual cause of the wedge after the device resets itself —
+    /// then force-unmount and remount our volumes. This recovers without a reboot.
+    nonisolated private static func runReconnect() {
+        let script = """
+        /usr/bin/pkill -9 -f 'com.apple.fskit.msdos' 2>/dev/null || true
+        sleep 1
+        for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null || true; done
+        sleep 1
+        for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null || true; done
+        exit 0
+        """
+        let tmp = NSTemporaryDirectory() + "sdrgb-repair-\(UUID().uuidString).sh"
+        guard (try? script.write(toFile: tmp, atomically: true, encoding: .utf8)) != nil else { return }
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+
+        let osa = "do shell script \"/bin/sh '\(tmp)'\" with administrator privileges"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", osa]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in done.signal() }
+        do { try p.run() } catch { return }
+        // Generous wait (user authenticates), then abandon if something hangs.
+        if done.wait(timeout: .now() + 120) == .timedOut { p.terminate() }
     }
 
     /// Write `text` to `url` via an isolated child: stage on local disk first
