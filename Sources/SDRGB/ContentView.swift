@@ -260,10 +260,8 @@ struct ContentView: View {
     /// Header gear menu for app-level settings (no longer at the bottom of tabs).
     private var settingsMenu: some View {
         Menu {
-            Button { runRepair() } label: {
-                Label("Reconnect / repair device", systemImage: "arrow.triangle.2.circlepath")
-            }
-            .disabled(wake.repairBusy)
+            Button("Reconnect / repair device") { runRepair() }
+                .disabled(wake.repairBusy)
             Toggle("Auto-repair when wedged", isOn: $device.autoRepair)
             Divider()
             Toggle("Launch at login", isOn: Binding(
