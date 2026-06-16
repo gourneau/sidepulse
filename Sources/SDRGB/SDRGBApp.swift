@@ -4,7 +4,7 @@ import AppKit
 @main
 struct SDRGBApp: App {
     @StateObject private var device = DeviceManager()
-    @StateObject private var wake = WakeGuard()
+    @StateObject private var wake = WakeGuard.shared
 
     init() {
         // Safe maintenance flag: remove the login item and quit WITHOUT starting

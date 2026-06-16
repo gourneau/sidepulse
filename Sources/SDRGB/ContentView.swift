@@ -37,6 +37,7 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if device.hungDriverDetected { hungDriverBanner }
             Divider()
 
             Picker("", selection: $tab) {
@@ -106,6 +107,23 @@ struct ContentView: View {
         device.loadCurrentProgram()
     }
 
+    /// Passwordless repair via the helper, then re-detect the device.
+    private func runRepair() {
+        wake.repair { device.afterRepair() }
+    }
+
+    private var hungDriverBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Text("macOS's FAT driver is stuck (this also hangs Finder). Repair it?")
+                .font(.caption).fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Repair") { runRepair() }.disabled(wake.repairBusy)
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+    }
+
     /// Open the spec window and force it in front of the menu-bar popover (an
     /// accessory app otherwise opens it behind, which looks wrong).
     private func openSpec() {
@@ -168,11 +186,11 @@ struct ContentView: View {
                 Spacer()
 
                 if device.devices.isEmpty {
-                    Button { device.reconnect() } label: {
-                        if device.reconnectBusy { ProgressView().controlSize(.mini) }
+                    Button { runRepair() } label: {
+                        if wake.repairBusy { ProgressView().controlSize(.mini) }
                         else { Text("Reconnect").font(.caption) }
                     }
-                    .disabled(device.reconnectBusy)
+                    .disabled(wake.repairBusy)
                 }
 
                 settingsMenu
@@ -225,10 +243,11 @@ struct ContentView: View {
     /// Header gear menu for app-level settings (no longer at the bottom of tabs).
     private var settingsMenu: some View {
         Menu {
-            Button { device.reconnect() } label: {
+            Button { runRepair() } label: {
                 Label("Reconnect / repair device", systemImage: "arrow.triangle.2.circlepath")
             }
-            .disabled(device.reconnectBusy)
+            .disabled(wake.repairBusy)
+            Toggle("Auto-repair when wedged", isOn: $device.autoRepair)
             Divider()
             Toggle("Launch at login", isOn: Binding(
                 get: { loginEnabled },

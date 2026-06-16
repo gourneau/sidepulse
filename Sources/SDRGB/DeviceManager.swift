@@ -54,8 +54,6 @@ final class DeviceManager: ObservableObject {
     @Published private(set) var status: AppStatus?
     /// The program currently on the selected device's LEDS.TXT (read on demand).
     @Published private(set) var currentProgram: String?
-    /// True while a reconnect/repair is running.
-    @Published private(set) var reconnectBusy = false
 
     private func setStatus(_ level: AppStatus.Level, _ text: String) {
         status = AppStatus(level: level, text: text, date: Date())
@@ -140,6 +138,13 @@ final class DeviceManager: ObservableObject {
     private var lastUserProgram: String?
     /// When true, switch the LEDs off as the Mac sleeps and restore on wake.
     @Published var ledsOffOnSleep = true
+    /// Auto-try the repair once, ~30s after the device looks wedged/disconnected.
+    @Published var autoRepair = true
+    private var autoRepairTimer: Timer?
+    private var autoRepairedThisEpisode = false
+    /// True when a `com.apple.fskit.msdos` process is detected pegged at ~100% CPU
+    /// (the hung-FAT-driver state) — the UI offers a one-click Repair.
+    @Published private(set) var hungDriverDetected = false
 
     /// Available metrics. Battery = white, CPU = blue, Memory = green.
     private(set) lazy var metrics: [Metric] = [
@@ -173,6 +178,8 @@ final class DeviceManager: ObservableObject {
         startMetrics()
         // Detect connected devices (off-thread); the scan handler beats them.
         rescan()
+        // On launch, see if the FAT driver is already wedged (stalls Finder too).
+        checkHungDriver()
     }
 
     // MARK: - Detection
@@ -225,15 +232,12 @@ final class DeviceManager: ObservableObject {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles])) ?? []
 
+        // Match by mount name only — never stat INTO the volume, which can hang
+        // if its (emulated) FAT driver is wedged. Listing /Volumes is safe.
         var found: [Device] = []
         for vol in vols {
-            let leds = vol.appendingPathComponent("LEDS.TXT")
-            let status = vol.appendingPathComponent("STATUS.TXT")
-            // A device exposes LEDS.TXT alongside the firmware's STATUS.TXT.
-            guard fm.fileExists(atPath: leds.path),
-                  fm.fileExists(atPath: status.path) else { continue }
             let name = vol.lastPathComponent
-            let count = knownLEDCounts[name] ?? 2
+            guard let count = knownLEDCounts[name] else { continue }
             found.append(Device(volumeURL: vol, name: name, ledCount: count))
         }
         return found.sorted { $0.name < $1.name }
@@ -249,6 +253,7 @@ final class DeviceManager: ObservableObject {
         // Keep newly connected devices alive right away and refresh Info mode.
         if changed { beat() }
         if infoActive { showInfoFrame(advance: false, force: true) }
+        evaluateAutoRepair()
     }
 
     // MARK: - Writing LED programs
@@ -436,6 +441,7 @@ final class DeviceManager: ObservableObject {
         case .stuck:
             stuckVolumes.insert(volume)
             setStatus(.warning, "Device stopped responding — I/O paused. Reconnect it to recover.")
+            evaluateAutoRepair()
         case .failed:
             switch kind {
             case .leds, .liveLeds, .info:
@@ -509,61 +515,78 @@ final class DeviceManager: ObservableObject {
 
     // MARK: - Reconnect / repair a stuck volume
 
-    /// Best-effort repair without a reboot: force-unmount any wedged device
-    /// volume, then remount it. Runs in timeout-protected subprocesses so a
-    /// wedged device can't hang the app. (A true USB-level wedge may still need a
-    /// physical replug — there's no supported full-USB reset in userspace.)
-    func reconnect() {
-        guard !reconnectBusy else { return }
-        reconnectBusy = true
-        setStatus(.info, "Reconnecting the device…")
-        ioQueue.async { [weak self] in
-            DeviceManager.runReconnect()
-            Task { @MainActor in
-                guard let self else { return }
-                self.reconnectBusy = false
-                self.stuckVolumes.removeAll()
-                self.inFlightVolumes.removeAll()
-                self.rescan()
-                // Give the remount a moment, then report based on what's present.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) {
-                    if self.devices.isEmpty {
-                        self.setStatus(.warning, "Couldn’t reconnect — try unplugging and replugging.")
-                    } else {
-                        self.setStatus(.success, "Reconnected")
-                    }
+    private func needsRepair() -> Bool { devices.isEmpty || anyDeviceStuck }
+
+    /// Start/cancel the 30s one-shot auto-repair based on device health.
+    private func evaluateAutoRepair() {
+        if needsRepair() {
+            if autoRepairTimer == nil && !autoRepairedThisEpisode {
+                let t = Timer(timeInterval: 30, repeats: false) { [weak self] _ in
+                    Task { @MainActor in self?.fireAutoRepair() }
                 }
+                t.tolerance = 5
+                RunLoop.main.add(t, forMode: .common)
+                autoRepairTimer = t
+            }
+        } else {
+            autoRepairTimer?.invalidate()
+            autoRepairTimer = nil
+            autoRepairedThisEpisode = false   // healthy again → allow next episode
+        }
+    }
+
+    private func fireAutoRepair() {
+        autoRepairTimer = nil
+        guard autoRepair, needsRepair(), !autoRepairedThisEpisode else { return }
+        autoRepairedThisEpisode = true
+        setStatus(.info, "Auto-repairing the device…")
+        WakeGuard.shared.autoRepairIfPossible { [weak self] in self?.afterRepair() }
+    }
+
+    /// Called after WakeGuard's privileged repair finishes: re-detect and report.
+    func afterRepair() {
+        stuckVolumes.removeAll()
+        inFlightVolumes.removeAll()
+        hungDriverDetected = false
+        rescan()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [weak self] in
+            guard let self else { return }
+            self.checkHungDriver()   // confirm the driver is no longer pegged
+            if self.devices.isEmpty {
+                self.setStatus(.warning, "Couldn’t reconnect — try unplugging and replugging.")
+            } else {
+                self.setStatus(.success, "Reconnected")
             }
         }
     }
 
-    /// Root repair (one admin prompt): kill the hung `com.apple.fskit.msdos` FAT
-    /// driver — the actual cause of the wedge after the device resets itself —
-    /// then force-unmount and remount our volumes. This recovers without a reboot.
-    nonisolated private static func runReconnect() {
-        let script = """
-        /usr/bin/pkill -9 -f 'com.apple.fskit.msdos' 2>/dev/null || true
-        sleep 1
-        for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null || true; done
-        sleep 1
-        for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null || true; done
-        exit 0
-        """
-        let tmp = NSTemporaryDirectory() + "sdrgb-repair-\(UUID().uuidString).sh"
-        guard (try? script.write(toFile: tmp, atomically: true, encoding: .utf8)) != nil else { return }
-        defer { try? FileManager.default.removeItem(atPath: tmp) }
+    /// Detect a hung FAT driver (also what stalls Finder) via a cheap `ps` — never
+    /// touches the device, so it's safe even while everything else is wedged.
+    func checkHungDriver() {
+        DispatchQueue.global(qos: .utility).async {
+            let hung = DeviceManager.isFskitHung()
+            Task { @MainActor in self.hungDriverDetected = hung }
+        }
+    }
 
-        let osa = "do shell script \"/bin/sh '\(tmp)'\" with administrator privileges"
+    nonisolated static func isFskitHung() -> Bool {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        p.arguments = ["-e", osa]
-        p.standardOutput = FileHandle.nullDevice
+        p.executableURL = URL(fileURLWithPath: "/bin/ps")
+        p.arguments = ["-axo", "%cpu=,command="]
+        let pipe = Pipe()
+        p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
-        let done = DispatchSemaphore(value: 0)
-        p.terminationHandler = { _ in done.signal() }
-        do { try p.run() } catch { return }
-        // Generous wait (user authenticates), then abandon if something hangs.
-        if done.wait(timeout: .now() + 120) == .timedOut { p.terminate() }
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        for raw in out.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard let sp = line.firstIndex(of: " ") else { continue }
+            let cpu = Double(line[..<sp]) ?? 0
+            let cmd = line[line.index(after: sp)...]
+            if cmd.contains("com.apple.fskit.msdos") && cpu > 50 { return true }
+        }
+        return false
     }
 
     /// Write `text` to `url` via an isolated child: stage on local disk first

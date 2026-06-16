@@ -32,6 +32,33 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         }
     }
 
+    func repair(reply: @escaping (String) -> Void) {
+        // Root, so no sudo needed. Kill the hung FAT driver first (that's what's
+        // wedged), then force-unmount and remount our volumes.
+        var log = "pkill fskit.msdos:\n" + run("/usr/bin/pkill", ["-9", "-f", "com.apple.fskit.msdos"])
+        Thread.sleep(forTimeInterval: 1)
+        for v in ["SDRGB", "USBDOT"] {
+            log += "\nunmount \(v):\n" + run("/usr/sbin/diskutil", ["unmount", "force", "/Volumes/\(v)"])
+        }
+        Thread.sleep(forTimeInterval: 1)
+        for v in ["SDRGB", "USBDOT"] {
+            log += "\nmount \(v):\n" + run("/usr/sbin/diskutil", ["mount", v])
+        }
+        reply(log)
+    }
+
+    private func run(_ path: String, _ args: [String]) -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch { return "(failed to launch \(path))" }
+        p.waitUntilExit()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    }
+
     func version(reply: @escaping (String) -> Void) { reply(helperVersion) }
 
     // MARK: Client validation

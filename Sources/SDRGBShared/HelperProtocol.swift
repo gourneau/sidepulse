@@ -21,6 +21,10 @@ public enum HelperConstants {
 @objc public protocol HelperProtocol {
     /// Set `pmset -a disablesleep` to on/off. `reply(true)` on success.
     func setDisableSleep(_ on: Bool, reply: @escaping (Bool) -> Void)
+    /// Repair a wedged device without a reboot: kill the hung
+    /// `com.apple.fskit.msdos` FAT driver, then force-unmount + remount the
+    /// device volumes. Replies with a short log.
+    func repair(reply: @escaping (String) -> Void)
     /// Liveness check that also returns the helper's version.
     func version(reply: @escaping (String) -> Void)
 }
