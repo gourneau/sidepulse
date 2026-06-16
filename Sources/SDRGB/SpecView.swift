@@ -17,6 +17,20 @@ struct SpecView: View {
             .textSelection(.enabled)
         }
         .frame(width: 660, height: 660)
+        .onAppear {
+            // An accessory (menu-bar) app opens windows behind the popover and
+            // can't bring them front. Become a regular app while this window is
+            // up so it comes forward; revert when it closes.
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            DispatchQueue.main.async {
+                NSApp.windows.first { $0.title == "LEDS.TXT Format" }?
+                    .makeKeyAndOrderFront(nil)
+            }
+        }
+        .onDisappear {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     @ViewBuilder

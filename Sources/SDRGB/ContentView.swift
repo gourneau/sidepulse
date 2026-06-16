@@ -102,10 +102,13 @@ struct ContentView: View {
     /// Open the spec window and force it in front of the menu-bar popover (an
     /// accessory app otherwise opens it behind, which looks wrong).
     private func openSpec() {
+        // Become a regular app so the window can come to the front of the
+        // menu-bar popover (SpecView reverts to accessory when it closes).
+        NSApp.setActivationPolicy(.regular)
         openWindow(id: "spec")
         NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async {
-            for w in NSApp.windows where w.title == "LEDS.TXT Format" {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            if let w = NSApp.windows.first(where: { $0.title == "LEDS.TXT Format" }) {
                 w.makeKeyAndOrderFront(nil)
                 w.orderFrontRegardless()
             }

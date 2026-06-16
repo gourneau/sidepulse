@@ -8,27 +8,30 @@ import IOKit.pwr_mgt
 /// - **Lid open** — an IOKit power assertion (no permissions). Same technique as
 ///   `caffeinate` / KeepingYouAwake; cannot stop lid-close sleep on its own.
 /// - **Lid closed** — sets the kernel `SleepDisabled` flag via
-///   `pmset -a disablesleep`, which needs admin (one macOS password / Touch ID
-///   prompt). Reflected from the real flag on launch; reverted on disable/quit;
-///   clears on reboot.
+///   `pmset -a disablesleep`. The first time, it installs a narrowly-scoped
+///   passwordless `sudo` rule (one admin prompt) limited to exactly
+///   `pmset -a disablesleep 0|1`; after that every toggle is instant — forever,
+///   across reboots — with no further prompts.
+///
+/// NOTE: the sudo-rule approach is great for local/personal use. For a *shipped*
+/// app, replace `installRule`/`runSudo` with an SMAppService privileged helper +
+/// XPC (see README "Shipping"). The `setLidClosed` seam stays the same.
 @MainActor
 final class WakeGuard: ObservableObject {
     /// Lid-open keep-awake (free, in-process power assertion).
     @Published var keepAwake = false {
         didSet { keepAwake ? createAssertion() : releaseAssertion() }
     }
-    /// Lid-closed keep-awake (admin `pmset disablesleep`).
+    /// Lid-closed keep-awake (`pmset disablesleep`, passwordless after first setup).
     @Published private(set) var lidClosed = false
-    /// An admin op is in flight (password dialog up).
     @Published private(set) var lidClosedBusy = false
-    /// Last admin error/cancel, shown in the UI (non-fatal).
     @Published private(set) var lidClosedError: String?
 
-    private var assertionID: IOPMAssertionID = IOPMAssertionID(0)
+    private var assertionID = IOPMAssertionID(0)
     private var hasAssertion = false
+    nonisolated private static let sudoersPath = "/etc/sudoers.d/sdrgb-disablesleep"
 
     init() {
-        // Reflect the real system flag so the toggle is accurate across restarts.
         refreshLidClosedState()
         NotificationCenter.default.addObserver(
             self, selector: #selector(willTerminate),
@@ -53,50 +56,88 @@ final class WakeGuard: ObservableObject {
         hasAssertion = false
     }
 
-    // MARK: - Lid-closed (admin pmset disablesleep)
+    // MARK: - Lid-closed (passwordless pmset disablesleep)
 
-    /// Toggle target for the lid-closed control. Runs the admin op and only flips
-    /// the published state to match the actual outcome.
     func setLidClosed(_ enabled: Bool) {
         guard enabled != lidClosed, !lidClosedBusy else { return }
         lidClosedBusy = true
         lidClosedError = nil
         let value = enabled ? "1" : "0"
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = WakeGuard.runAdminDisableSleep(value)
+            var message: String?
+            var ok = (WakeGuard.runSudo(value) == .ok)
+            if !ok {
+                // First run: install the one-time passwordless rule, then retry.
+                switch WakeGuard.installRule() {
+                case .ok:
+                    ok = (WakeGuard.runSudo(value) == .ok)
+                    if !ok { message = "Couldn't change the system sleep setting." }
+                case .cancelled:
+                    message = "Cancelled — admin permission is needed once to set this up."
+                case .failed:
+                    message = "Couldn't set up passwordless control."
+                }
+            }
+            let actual = WakeGuard.readSleepDisabled()
             Task { @MainActor in
                 self.lidClosedBusy = false
-                switch result {
-                case .ok:
-                    self.lidClosed = enabled
-                case .cancelled:
-                    self.lidClosedError = "Cancelled — admin permission is required for lid-closed mode."
-                case .failed:
-                    self.lidClosedError = "Couldn't change the system sleep setting."
-                }
+                self.lidClosed = actual
+                self.lidClosedError = message
             }
         }
     }
 
-    private enum AdminResult { case ok, cancelled, failed }
+    private enum SudoResult { case ok, needsSetup, failed }
+    private enum InstallResult { case ok, cancelled, failed }
 
-    /// Run `pmset -a disablesleep <value>` with administrator privileges via
-    /// osascript (the standard macOS auth dialog). Blocking — call off-main.
-    nonisolated private static func runAdminDisableSleep(_ value: String) -> AdminResult {
-        let script = "do shell script \"/usr/bin/pmset -a disablesleep \(value)\" with administrator privileges"
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
-        let err = Pipe()
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = err
-        do { try proc.run() } catch { return .failed }
-        proc.waitUntilExit()
-        if proc.terminationStatus == 0 { return .ok }
-        // osascript returns a User canceled (-128) message when the auth dialog
-        // is dismissed.
-        let text = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return text.contains("-128") || text.localizedCaseInsensitiveContains("cancel")
+    /// `sudo -n pmset -a disablesleep <value>` — no prompt once the rule exists.
+    nonisolated private static func runSudo(_ value: String) -> SudoResult {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        p.arguments = ["-n", "/usr/bin/pmset", "-a", "disablesleep", value]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return .failed }
+        p.waitUntilExit()
+        return p.terminationStatus == 0 ? .ok : .needsSetup
+    }
+
+    /// One-time: install a passwordless sudoers rule scoped to exactly
+    /// `pmset -a disablesleep 0|1` for the current user. One admin prompt.
+    nonisolated private static func installRule() -> InstallResult {
+        let user = NSUserName()
+        guard !user.isEmpty,
+              user.allSatisfy({ $0.isLetter || $0.isNumber || "._-".contains($0) }) else {
+            return .failed
+        }
+        let setup = """
+        #!/bin/sh
+        set -e
+        f=\(sudoersPath)
+        printf '%s ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1\\n' "$1" > "$f"
+        chown root:wheel "$f"
+        chmod 0440 "$f"
+        /usr/sbin/visudo -cf "$f" >/dev/null 2>&1 || { rm -f "$f"; exit 1; }
+        """
+        let tmp = NSTemporaryDirectory() + "sdrgb-setup-\(UUID().uuidString).sh"
+        guard (try? setup.write(toFile: tmp, atomically: true, encoding: .utf8)) != nil else {
+            return .failed
+        }
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+
+        // The standard macOS admin auth dialog (one time).
+        let osa = "do shell script \"/bin/sh '\(tmp)' '\(user)'\" with administrator privileges"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", osa]
+        p.standardOutput = FileHandle.nullDevice
+        let errPipe = Pipe()
+        p.standardError = errPipe
+        do { try p.run() } catch { return .failed }
+        p.waitUntilExit()
+        if p.terminationStatus == 0 { return .ok }
+        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return (err.contains("-128") || err.localizedCaseInsensitiveContains("cancel"))
             ? .cancelled : .failed
     }
 
@@ -127,9 +168,8 @@ final class WakeGuard: ObservableObject {
 
     @objc private func willTerminate() {
         releaseAssertion()
-        // Restore normal sleep so quitting the app can't leave a laptop unable to
-        // sleep in a bag. Best-effort & synchronous; auth often cached from the
-        // recent enable, otherwise this may prompt once.
-        if lidClosed { _ = WakeGuard.runAdminDisableSleep("0") }
+        // Restore normal sleep so quitting can't leave a laptop unable to sleep in
+        // a bag. Passwordless once the rule is installed.
+        if lidClosed { _ = WakeGuard.runSudo("0") }
     }
 }
