@@ -24,8 +24,13 @@ ZIP="build/SDRGB.zip"
 NZIP="build/SDRGB-notarize.zip"
 
 echo "==> 1/5 build + sign"
+export APP_VERSION="${TAG#v}"   # stamp the release version into the bundle
 scripts/package_app.sh >/dev/null
-codesign -dv --verbose=2 "$APP" 2>&1 | grep -q "Developer ID Application" \
+# Capture first, then grep: piping `codesign | grep -q` under `set -o pipefail`
+# can fail spuriously — grep -q closes the pipe on first match, codesign gets
+# SIGPIPE and exits non-zero, and pipefail reports the whole pipeline failed.
+SIGN_INFO="$(codesign -dv --verbose=2 "$APP" 2>&1 || true)"
+echo "$SIGN_INFO" | grep -q "Developer ID Application" \
   || { echo "ERROR: app is not Developer ID signed (set SIGN_IDENTITY)."; exit 1; }
 
 echo "==> 2/5 notarize (Apple scan, ~1-5 min)"

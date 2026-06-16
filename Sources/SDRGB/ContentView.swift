@@ -260,6 +260,8 @@ struct ContentView: View {
     /// Header gear menu for app-level settings (no longer at the bottom of tabs).
     private var settingsMenu: some View {
         Menu {
+            Text("SDRGB \(appVersion)")
+            Divider()
             Button("Reconnect / repair device") { runRepair() }
                 .disabled(wake.repairBusy)
             Toggle("Auto-repair when wedged", isOn: $device.autoRepair)
@@ -276,6 +278,19 @@ struct ContentView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    /// The app's own version, from the bundle's Info.plist (stamped at build time
+    /// by package_app.sh from the release tag; "dev" for an unsigned `swift run`).
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String
+        let build = info?["CFBundleVersion"] as? String
+        switch (short, build) {
+        case let (s?, b?) where s != b: return "\(s) (\(b))"
+        case let (s?, _): return s
+        default: return "dev"
+        }
     }
 
     private var heartbeatDetail: String {
