@@ -270,6 +270,7 @@ struct ContentView: View {
                 get: { loginEnabled },
                 set: { loginEnabled = LoginItem.setEnabled($0) }
             ))
+            Toggle("Turn off LEDs when quitting", isOn: $device.ledsOffOnQuit)
             Divider()
             Button("Quit SDRGB") { NSApplication.shared.terminate(nil) }
         } label: {

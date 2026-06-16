@@ -174,6 +174,8 @@ final class DeviceManager: ObservableObject {
     private var lastUserProgram: String?
     /// When true, switch the LEDs off as the Mac sleeps and restore on wake.
     @Published var ledsOffOnSleep = true
+    /// When true, switch the LEDs off as the app quits (no restore — it's gone).
+    @Published var ledsOffOnQuit = false
     /// Auto-try the repair once, ~30s after the device looks wedged/disconnected.
     @Published var autoRepair = true
     private var autoRepairTimer: Timer?
@@ -208,6 +210,10 @@ final class DeviceManager: ObservableObject {
                        name: NSWorkspace.didWakeNotification, object: nil)
         nc.addObserver(self, selector: #selector(willSleep),
                        name: NSWorkspace.willSleepNotification, object: nil)
+        // App quit: optionally switch the LEDs off before we exit.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appWillTerminate),
+            name: NSApplication.willTerminateNotification, object: nil)
         startHeartbeat()
         startTick()
         startMetrics()
@@ -286,6 +292,17 @@ final class DeviceManager: ObservableObject {
         let url = device.ledsURL
         enqueueIO(kind: .info, volume: device.volumeURL.path) {
             DeviceManager.performWrite(LEDProgram.off() + "\n", to: url)
+        }
+    }
+
+    @objc private func appWillTerminate() {
+        // The app is exiting, so the async I/O queue won't run — write off
+        // synchronously instead. performWrite is bounded by its own timeout, and
+        // every connected device gets switched off (skipping any that's wedged).
+        guard ledsOffOnQuit else { return }
+        let off = LEDProgram.off() + "\n"
+        for device in devices where !stuckVolumes.contains(device.volumeURL.path) {
+            _ = DeviceManager.performWrite(off, to: device.ledsURL)
         }
     }
 
