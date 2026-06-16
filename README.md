@@ -97,7 +97,45 @@ cp -R build/SDRGB.app /Applications/
 open /Applications/SDRGB.app
 ```
 
+## Lid-closed keep-awake: privileged helper
+
+Lid-closed keep-awake needs root (`pmset disablesleep`). The shippable design uses
+a **privileged `SMAppService` LaunchDaemon helper + XPC** (`SDRGBHelper`):
+
+- The helper (`Sources/SDRGBHelper`) is a tiny root daemon vending one XPC method
+  (`setDisableSleep`). It only accepts connections from this app signed by the
+  **same Team** (the Team is read from the helper's own signature at runtime — no
+  hardcoded Team ID; see `Sources/SDRGBShared/HelperProtocol.swift`).
+- The app registers it via `SMAppService.daemon`. First enable → macOS asks you to
+  **approve "SDRGB" in System Settings → General → Login Items** (Allow in the
+  Background). After that, toggling is **passwordless forever** over XPC.
+- Unsigned/dev builds (`swift run`, or `SIGN_IDENTITY=-`) can't register a daemon,
+  so they fall back to a one-time passwordless `sudo` rule.
+
+This requires a **Developer ID Application** signing identity (the helper won't
+register otherwise). `scripts/package_app.sh` signs both with it + hardened runtime.
+
+## Shipping (Developer ID + notarized)
+
+```sh
+# build + sign (uses the Developer ID identity in package_app.sh)
+scripts/package_app.sh
+
+# one-time: store notary credentials
+xcrun notarytool store-credentials sdrgb-notary \
+  --apple-id "<your apple id>" --team-id 8LL2JEMH4P --password "<app-specific-password>"
+
+# notarize + staple
+ditto -c -k --keepParent build/SDRGB.app build/SDRGB.zip
+xcrun notarytool submit build/SDRGB.zip --keychain-profile sdrgb-notary --wait
+xcrun stapler staple build/SDRGB.app
+```
+
+Distribute the stapled `SDRGB.app` (e.g. zipped or in a DMG). This is a Developer
+ID / direct-download app — the privileged helper is **not** compatible with the
+sandboxed Mac App Store / TestFlight.
+
 ## Requirements
 
-- macOS 13+ (uses SwiftUI `MenuBarExtra` and `SMAppService`).
-- Swift toolchain (`swift build`).
+- macOS 13+ (uses SwiftUI `MenuBarExtra`, `SMAppService`, XPC).
+- Swift toolchain (`swift build`); a Developer ID for the signed helper build.
