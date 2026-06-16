@@ -17,6 +17,9 @@ struct ContentView: View {
     @State private var didInitialLoad = false
     @State private var awaitingReload = false
     @State private var loginEnabled = LoginItem.isEnabled
+    @State private var statusFlash = false
+    @State private var heartBeating = false
+    @State private var colorEditMetric: String?
 
     enum Tab: String, CaseIterable, Identifiable {
         case color = "Color"
@@ -24,6 +27,7 @@ struct ContentView: View {
         case presets = "Presets"
         case modes = "Modes"
         case advanced = "DSL"
+        case awake = "Awake"
         var id: String { rawValue }
     }
 
@@ -47,21 +51,16 @@ struct ContentView: View {
                 case .presets: presetsTab
                 case .modes: modesTab
                 case .advanced: advancedTab
+                case .awake: awakeTab
                 }
-            }
-
-            if let st = device.status {
-                Label(st.text, systemImage: statusIcon(st.level))
-                    .font(.caption).foregroundStyle(statusColor(st.level))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help(relative(st.date))
             }
 
             Divider()
             footer
         }
         .padding(14)
-        .frame(width: 360)
+        .frame(width: 460)
+        .onChange(of: device.status) { _ in flashStatus() }
         .onChange(of: color) { _ in if tab == .color { liveSend() } }
         .onChange(of: perLEDColors) { _ in if tab == .perLED { liveSend() } }
         .onChange(of: brightness) { _ in liveSend() }
@@ -74,24 +73,34 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Status helpers
+    // MARK: - Status dot helpers
 
-    private func statusIcon(_ level: AppStatus.Level) -> String {
-        switch level {
-        case .success: return "checkmark.circle.fill"
-        case .info: return "info.circle"
-        case .warning: return "exclamationmark.triangle.fill"
-        case .error: return "xmark.octagon.fill"
+    /// Color of the top-left dot: device connection, tinted by the last result.
+    private var dotColor: Color {
+        if device.anyDeviceStuck { return .red }
+        if let level = device.status?.level {
+            if level == .error { return .red }
+            if level == .warning { return .orange }
         }
+        return device.devices.isEmpty ? .gray : .green
     }
 
-    private func statusColor(_ level: AppStatus.Level) -> Color {
-        switch level {
-        case .success: return .green
-        case .info: return .secondary
-        case .warning: return .orange
-        case .error: return .red
+    /// Hover text for the dot: connection + what last happened.
+    private var statusTooltip: String {
+        var parts: [String] = []
+        parts.append(device.devices.isEmpty
+            ? "No device connected"
+            : "Connected: \(device.selectedDevice?.name ?? "device") (\(ledCount) LEDs)")
+        if let st = device.status {
+            parts.append("\(st.text) · \(relative(st.date))")
         }
+        return parts.joined(separator: "\n")
+    }
+
+    /// Briefly pulse the dot when something happens (an update/error).
+    private func flashStatus() {
+        statusFlash = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { statusFlash = false }
     }
 
     private func reloadProgram() {
@@ -141,24 +150,20 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if device.devices.isEmpty {
-                Label("No device connected", systemImage: "circle.slash")
-                    .foregroundStyle(.secondary)
-            } else if device.devices.count == 1, let d = device.selectedDevice {
-                Label("\(d.name) · \(d.ledCount) LEDs", systemImage: "circle.fill")
-                    .foregroundStyle(.green)
-            } else {
-                Picker(selection: Binding(
-                    get: { device.selectedID ?? device.selectedDevice?.id ?? "" },
-                    set: { device.selectedID = $0 }
-                )) {
-                    ForEach(device.devices) { d in
-                        Text("\(d.name) · \(d.ledCount) LEDs").tag(d.id)
-                    }
-                } label: {
-                    Label("Device", systemImage: "circle.fill").foregroundStyle(.green)
-                }
-                .pickerStyle(.menu)
+            HStack(spacing: 8) {
+                // Status dot: connection + flashes on each update; hover for detail.
+                Circle().fill(dotColor)
+                    .frame(width: 11, height: 11)
+                    .overlay(Circle().stroke(.quaternary))
+                    .scaleEffect(statusFlash ? 1.8 : 1.0)
+                    .animation(.easeOut(duration: 0.45), value: statusFlash)
+                    .help(statusTooltip)
+
+                deviceLabel
+
+                Spacer()
+
+                heartView
             }
             if device.anyDeviceStuck {
                 Label("Device not responding — writes paused. Reconnect it to recover.",
@@ -169,30 +174,47 @@ struct ContentView: View {
         }
     }
 
-    /// Small, unobtrusive keepalive line for the footer — it should just work.
-    /// Static text (no ticking numbers); details are on hover.
-    private var heartbeatLine: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "heart")
-                .foregroundStyle(device.lastHeartbeatOK ? .secondary : .tertiary)
-            Text(device.devices.isEmpty ? "keepalive paused" : "keepalive active")
-                .foregroundStyle(.secondary)
-            Button("beat") { device.beatNow() }
-                .buttonStyle(.plain).foregroundStyle(.tertiary)
+    @ViewBuilder
+    private var deviceLabel: some View {
+        if device.devices.isEmpty {
+            Text("No device").foregroundStyle(.secondary)
+        } else if device.devices.count == 1, let d = device.selectedDevice {
+            Text("\(d.name) · \(d.ledCount) LEDs")
+        } else {
+            Picker(selection: Binding(
+                get: { device.selectedID ?? device.selectedDevice?.id ?? "" },
+                set: { device.selectedID = $0 }
+            )) {
+                ForEach(device.devices) { d in
+                    Text("\(d.name) · \(d.ledCount) LEDs").tag(d.id)
+                }
+            } label: { EmptyView() }
+            .labelsHidden().pickerStyle(.menu).fixedSize()
         }
-        .font(.caption2)
-        .help(heartbeatDetail)
+    }
+
+    /// Beating heart in the header (keepalive). Hover for last/next details.
+    private var heartView: some View {
+        Image(systemName: "heart.fill")
+            .foregroundStyle(device.devices.isEmpty ? Color.gray : Color.pink)
+            .scaleEffect(device.devices.isEmpty ? 1.0 : (heartBeating ? 1.15 : 0.9))
+            .animation(device.devices.isEmpty ? .default
+                       : .easeInOut(duration: 0.85).repeatForever(autoreverses: true),
+                       value: heartBeating)
+            .onAppear { heartBeating = true }
+            .help(heartbeatDetail)
+            .onTapGesture { device.beatNow() }
     }
 
     private var heartbeatDetail: String {
-        guard !device.devices.isEmpty else { return "No device connected." }
-        var parts: [String] = []
-        if let last = device.lastHeartbeat { parts.append("last kept alive \(relative(last))") }
+        guard !device.devices.isEmpty else { return "No device mounted." }
+        var parts = ["Keeping the LED device alive — touches the card every 2 min. Click to do it now."]
+        if let last = device.lastHeartbeat { parts.append("Last touch \(relative(last)).") }
         if let next = device.nextHeartbeat {
             let secs = max(0, Int(next.timeIntervalSince(device.now)))
-            parts.append(String(format: "next in %d:%02d", secs / 60, secs % 60))
+            parts.append(String(format: "Next in %d:%02d.", secs / 60, secs % 60))
         }
-        return parts.isEmpty ? "Keepalive armed." : parts.joined(separator: " · ")
+        return parts.joined(separator: " ")
     }
 
     private func relative(_ date: Date) -> String {
@@ -296,24 +318,43 @@ struct ContentView: View {
 
             ForEach(device.metrics) { metric in
                 let showing = device.infoActive && device.displayedMetricID == metric.id
-                Toggle(isOn: Binding(
-                    get: { device.enabledMetrics.contains(metric.id) },
-                    set: { _ in activePreset = nil; device.toggleMetric(metric.id) }
-                )) {
+                VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Circle().fill(metric.color).frame(width: 11, height: 11)
-                            .overlay(Circle().stroke(.quaternary))
-                        Label(metric.name, systemImage: metric.symbol)
-                        if showing {
-                            Text("● on strip").font(.caption2)
-                                .foregroundStyle(.green)
+                        // Clickable color swatch → inline picker for this mode.
+                        Button {
+                            colorEditMetric = (colorEditMetric == metric.id) ? nil : metric.id
+                        } label: {
+                            Circle().fill(device.effectiveColor(metric.id))
+                                .frame(width: 14, height: 14)
+                                .overlay(Circle().stroke(.quaternary))
                         }
-                        Spacer()
-                        Text("\(Int((device.metricValues[metric.id] ?? 0) * 100))%")
-                            .font(.caption.monospaced()).foregroundStyle(.secondary)
+                        .buttonStyle(.plain)
+                        .help("Click to choose this mode's color")
+
+                        Toggle(isOn: Binding(
+                            get: { device.enabledMetrics.contains(metric.id) },
+                            set: { _ in activePreset = nil; device.toggleMetric(metric.id) }
+                        )) {
+                            HStack(spacing: 6) {
+                                Label(metric.name, systemImage: metric.symbol)
+                                if showing {
+                                    Text("● on strip").font(.caption2).foregroundStyle(.green)
+                                }
+                                Spacer()
+                                Text("\(Int((device.metricValues[metric.id] ?? 0) * 100))%")
+                                    .font(.caption.monospaced()).foregroundStyle(.secondary)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                    }
+                    if colorEditMetric == metric.id {
+                        ColorEditor(color: Binding(
+                            get: { device.effectiveColor(metric.id) },
+                            set: { device.setMetricColor(metric.id, $0) }
+                        ))
+                        .padding(.leading, 22)
                     }
                 }
-                .toggleStyle(.switch)
             }
 
             if device.enabledMetrics.count >= 2 {
@@ -393,8 +434,6 @@ struct ContentView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 6) {
-            keepAwakeControls
-            heartbeatLine
             HStack {
                 Toggle("Launch at login", isOn: $loginEnabled)
                     .toggleStyle(.checkbox).font(.caption)
@@ -407,14 +446,28 @@ struct ContentView: View {
         }
     }
 
-    private var keepAwakeControls: some View {
-        // Two independent, always-visible toggles — so lid-closed can always be
-        // turned back off (unchecking it restores normal lid-close sleep).
-        VStack(alignment: .leading, spacing: 3) {
+    // MARK: - Awake tab
+
+    private var awakeTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Big, glanceable status of the real sleep behavior.
+            HStack(spacing: 9) {
+                Circle().fill(awakeColor).frame(width: 12, height: 12)
+                    .overlay(Circle().stroke(.quaternary))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(awakeTitle).font(.callout.bold())
+                    Text(awakeSubtitle).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .help(awakeTitle + " — " + awakeSubtitle)
+
+            Divider()
+
             Toggle(isOn: $wake.keepAwake) {
                 Label("Keep Mac awake", systemImage: "cup.and.saucer")
             }
             .toggleStyle(.checkbox).font(.caption)
+            .help("Stops the Mac sleeping while idle (lid open). No permission needed.")
 
             Toggle(isOn: Binding(
                 get: { wake.lidClosed },
@@ -427,6 +480,7 @@ struct ContentView: View {
             }
             .toggleStyle(.checkbox).font(.caption)
             .disabled(wake.lidClosedBusy)
+            .help("Prevents sleep even when the lid is shut. First time asks you to approve the helper in System Settings → Login Items; then it's instant.")
 
             if wake.lidClosed {
                 Text("Mac won't sleep even with the lid closed — keep it on power; can run warm.")
@@ -434,10 +488,38 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let err = wake.lidClosedError {
-                Text(err).font(.caption2).foregroundStyle(.orange)
+                Label(err, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Divider()
+
+            Toggle("Turn LEDs off when the Mac sleeps", isOn: $device.ledsOffOnSleep)
+                .toggleStyle(.checkbox).font(.caption)
+                .help("Switch the LEDs off as the Mac sleeps and restore them on wake.")
+            Text("Otherwise the LED device keeps its last colors until USB power cuts, a few moments after the Mac sleeps.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var awakeTitle: String {
+        if wake.lidClosed { return "Awake — even with lid closed" }
+        if wake.keepAwake { return "Awake — while lid is open" }
+        return "Normal sleep"
+    }
+
+    private var awakeSubtitle: String {
+        if wake.lidClosed { return "The Mac will not sleep at all" }
+        if wake.keepAwake { return "Closing the lid will still sleep" }
+        return "The Mac sleeps normally"
+    }
+
+    private var awakeColor: Color {
+        if wake.lidClosed { return .orange }
+        if wake.keepAwake { return .green }
+        return .gray
     }
 
     private func bindingForLED(_ i: Int) -> Binding<Color> {

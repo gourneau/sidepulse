@@ -69,9 +69,10 @@ final class DeviceManager: ObservableObject {
     /// off the main thread. The actual device I/O happens inside that child, not
     /// here — so a wedge can never block this queue for more than `ioTimeout`.
     private let ioQueue = DispatchQueue(label: "com.gourneau.SDRGB.io", qos: .utility)
-    /// `.leds` = a manual program (shows success); `.info` = an Info-mode frame
-    /// (silent on success, so cycling doesn't spam); `.keepalive` = a read.
-    private enum WriteKind { case leds, info, keepalive }
+    /// `.leds` = a discrete manual program (flashes the status dot); `.liveLeds`
+    /// = a live slider write (quiet, so dragging doesn't strobe); `.info` = an
+    /// Info-mode frame (silent); `.keepalive` = a read.
+    private enum WriteKind { case leds, liveLeds, info, keepalive }
 
     /// True while a write/read to that device is outstanding (UI "Writing…").
     func isWriting(_ device: Device?) -> Bool {
@@ -118,6 +119,14 @@ final class DeviceManager: ObservableObject {
     /// Which enabled metric is currently shown (advances each sample tick).
     private var cycleIndex = 0
     @Published private(set) var displayedMetricID: String?
+    /// Whether the Mac is currently charging (for the battery breathing effect).
+    @Published private(set) var batteryCharging = false
+
+    /// Last manual program (color/preset/raw), restored after wake when
+    /// "turn LEDs off when the Mac sleeps" is on.
+    private var lastUserProgram: String?
+    /// When true, switch the LEDs off as the Mac sleeps and restore on wake.
+    @Published var ledsOffOnSleep = false
 
     /// Available metrics. Battery = white, CPU = blue, Memory = green.
     private(set) lazy var metrics: [Metric] = [
@@ -144,6 +153,8 @@ final class DeviceManager: ObservableObject {
                        name: NSWorkspace.didUnmountNotification, object: nil)
         nc.addObserver(self, selector: #selector(didWake),
                        name: NSWorkspace.didWakeNotification, object: nil)
+        nc.addObserver(self, selector: #selector(willSleep),
+                       name: NSWorkspace.willSleepNotification, object: nil)
         startHeartbeat()
         startTick()
         startMetrics()
@@ -165,6 +176,22 @@ final class DeviceManager: ObservableObject {
         // Resume cadence promptly after sleep.
         startHeartbeat()
         rescan()
+        beat()
+        // Restore the LEDs we turned off at sleep (give the volume a moment).
+        if ledsOffOnSleep, let program = lastUserProgram {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                _ = self?.deliver(program)
+            }
+        }
+    }
+
+    @objc private func willSleep() {
+        // Optionally switch the LEDs off as the Mac sleeps (restored on wake).
+        guard ledsOffOnSleep, let device = selectedDevice else { return }
+        let url = device.ledsURL
+        enqueueIO(kind: .info, volume: device.volumeURL.path) {
+            DeviceManager.performWrite(LEDProgram.off() + "\n", to: url)
+        }
     }
 
     /// Scan every mounted volume for an sdstatusbar device. Runs the (potentially
@@ -222,9 +249,10 @@ final class DeviceManager: ObservableObject {
             return validation
         }
         guard let device = selectedDevice else {
-            setStatus(.error, "No device connected — plug in SDRGB or USBDOT.")
+            setStatus(.error, "No device connected.")
             return validation
         }
+        if kind == .leds || kind == .liveLeds { lastUserProgram = program }   // restore-after-sleep
         let ledsURL = device.ledsURL
         let text = program + "\n"
         enqueueIO(kind: kind, volume: device.volumeURL.path) {
@@ -250,11 +278,11 @@ final class DeviceManager: ObservableObject {
         let validation = LEDProgram.validate(program)
         guard validation.isValid else { setStatus(.error, validation.message ?? "Invalid program."); return }
         guard selectedDevice != nil else {
-            setStatus(.error, "No device connected — plug in SDRGB or USBDOT."); return
+            setStatus(.error, "No device connected."); return
         }
         pendingWrite?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            Task { @MainActor in _ = self?.deliver(program) }
+            Task { @MainActor in _ = self?.deliver(program, kind: .liveLeds) }
         }
         pendingWrite = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
@@ -301,6 +329,7 @@ final class DeviceManager: ObservableObject {
         var values: [String: Double] = [:]
         for metric in metrics { values[metric.id] = metric.read() }
         metricValues = values
+        batteryCharging = BatteryReader.current().charging
     }
 
     /// Show the current metric across the whole strip, cycling to the next one
@@ -313,10 +342,16 @@ final class DeviceManager: ObservableObject {
         if advance { cycleIndex += 1 }
         let id = enabledMetrics[cycleIndex % count]
         displayedMetricID = id
-        guard let metric = metrics.first(where: { $0.id == id }) else { return }
-        let program = LEDProgram.fullBar(hex: metric.hex,
-                                         value: metricValues[id] ?? 0,
-                                         ledCount: device.ledCount)
+        guard metrics.contains(where: { $0.id == id }) else { return }
+        let value = metricValues[id] ?? 0
+        let hex = effectiveHex(id)
+        let program: String
+        if id == "battery" && batteryCharging {
+            // Gentle breathing while charging.
+            program = LEDProgram.pulseBar(hex: hex, value: value, ledCount: device.ledCount)
+        } else {
+            program = LEDProgram.fullBar(hex: hex, value: value, ledCount: device.ledCount)
+        }
         if !force && program == lastInfoProgram { return }
         lastInfoProgram = program
         deliver(program, kind: .info)
@@ -382,24 +417,23 @@ final class DeviceManager: ObservableObject {
 
     private func finishIO(kind: WriteKind, volume: String, result: IOResult) {
         inFlightVolumes.remove(volume)
-        let name = deviceName(forVolume: volume)
         switch result {
         case .stuck:
             stuckVolumes.insert(volume)
-            setStatus(.warning, "\(name) stopped responding — I/O paused. Unplug and replug to recover.")
+            setStatus(.warning, "Device stopped responding — I/O paused. Reconnect it to recover.")
         case .failed:
             switch kind {
-            case .leds, .info:
-                setStatus(.error, "Couldn’t write to \(name) — it may have been unplugged or full. Reconnect and try again.")
+            case .leds, .liveLeds, .info:
+                setStatus(.error, "Couldn’t write — the device may be unplugged or full.")
             case .keepalive:
                 lastHeartbeatOK = false
             }
         case .ok:
             switch kind {
             case .leds:
-                setStatus(.success, "Updated \(name).")
-            case .info:
-                // Cycling shouldn't spam success; clear any stale error/warning.
+                setStatus(.success, "Updated")
+            case .liveLeds, .info:
+                // Live/cycling writes stay quiet; clear any stale error/warning.
                 if let level = status?.level, level == .error || level == .warning { status = nil }
             case .keepalive:
                 lastHeartbeat = Date(); lastHeartbeatOK = true
@@ -407,8 +441,23 @@ final class DeviceManager: ObservableObject {
         }
     }
 
-    private func deviceName(forVolume volume: String) -> String {
-        devices.first { $0.volumeURL.path == volume }?.name ?? "the device"
+    // MARK: - Customizable metric colors
+
+    /// User overrides for metric colors (defaults live on each `Metric`).
+    @Published var metricColors: [String: Color] = [:]
+
+    func effectiveColor(_ id: String) -> Color {
+        metricColors[id] ?? metrics.first { $0.id == id }?.color ?? .white
+    }
+
+    func effectiveHex(_ id: String) -> String {
+        if let c = metricColors[id] { return LEDProgram.hex(c) }
+        return metrics.first { $0.id == id }?.hex ?? "#ffffff"
+    }
+
+    func setMetricColor(_ id: String, _ color: Color) {
+        metricColors[id] = color
+        if infoActive { showInfoFrame(advance: false, force: true) }
     }
 
     // MARK: - Reading the live program
@@ -418,13 +467,12 @@ final class DeviceManager: ObservableObject {
     func loadCurrentProgram() {
         guard let device = selectedDevice else {
             currentProgram = nil
-            setStatus(.error, "No device connected — plug in SDRGB or USBDOT.")
+            setStatus(.error, "No device connected.")
             return
         }
         let vol = device.volumeURL.path
         guard !stuckVolumes.contains(vol), !inFlightVolumes.contains(vol) else { return }
         let url = device.ledsURL
-        let name = device.name
         inFlightVolumes.insert(vol)
         ioQueue.async { [weak self] in
             let (result, text) = DeviceManager.readContents(url)
@@ -436,9 +484,9 @@ final class DeviceManager: ObservableObject {
                     self.currentProgram = text ?? ""
                 case .stuck:
                     self.stuckVolumes.insert(vol)
-                    self.setStatus(.warning, "\(name) stopped responding — I/O paused. Unplug and replug to recover.")
+                    self.setStatus(.warning, "Device stopped responding — I/O paused. Reconnect it to recover.")
                 case .failed:
-                    self.setStatus(.error, "Couldn’t read \(name). Is it still mounted?")
+                    self.setStatus(.error, "Couldn’t read the device. Is it still mounted?")
                 }
             }
         }

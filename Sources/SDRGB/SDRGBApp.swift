@@ -32,7 +32,7 @@ struct SDRGBApp: App {
                 .environmentObject(device)
                 .environmentObject(wake)
         } label: {
-            Image(systemName: device.devices.isEmpty ? "lightbulb.slash" : "lightbulb.fill")
+            Image(systemName: menuBarIcon)
         }
         .menuBarExtraStyle(.window)
 
@@ -40,5 +40,11 @@ struct SDRGBApp: App {
             SpecView()
         }
         .windowResizability(.contentSize)
+    }
+
+    /// Cup when keeping the Mac awake; otherwise the lightbulb (slash if no device).
+    private var menuBarIcon: String {
+        if wake.keepAwake || wake.lidClosed { return "cup.and.saucer.fill" }
+        return device.devices.isEmpty ? "lightbulb.slash" : "lightbulb.fill"
     }
 }
