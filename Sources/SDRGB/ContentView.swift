@@ -1,5 +1,4 @@
 import SwiftUI
-import AxisTooltip
 
 struct ContentView: View {
     @EnvironmentObject var device: DeviceManager
@@ -21,8 +20,6 @@ struct ContentView: View {
     @State private var statusFlash = false
     @State private var heartBeating = false
     @State private var colorEditMetric: String?
-    @State private var showDotTip = false
-    @State private var showHeartTip = false
 
     enum Tab: String, CaseIterable, Identifiable {
         case color = "Color"
@@ -175,11 +172,7 @@ struct ContentView: View {
                     .overlay(Circle().stroke(.quaternary))
                     .scaleEffect(statusFlash ? 1.8 : 1.0)
                     .animation(.easeOut(duration: 0.45), value: statusFlash)
-                    .onHover { showDotTip = $0 }
-                    .axisToolTip(isPresented: $showDotTip, alignment: .bottom,
-                                 constant: ATConstant(axisMode: .bottom)) {
-                        tipCard(statusTooltip)
-                    }
+                    .help(statusTooltip)
 
                 deviceLabel
 
@@ -236,20 +229,8 @@ struct ContentView: View {
                        : .default,
                        value: heartBeating)
             .onAppear { heartBeating = true }
-            .onHover { showHeartTip = $0 }
-            .axisToolTip(isPresented: $showHeartTip, alignment: .bottom,
-                         constant: ATConstant(axisMode: .bottom)) {
-                tipCard(heartbeatDetail)
-            }
+            .help(heartbeatDetail)
             .onTapGesture { device.beatNow() }
-    }
-
-    private func tipCard(_ text: String) -> some View {
-        Text(text)
-            .font(.caption2)
-            .padding(.horizontal, 9).padding(.vertical, 6)
-            .frame(maxWidth: 240, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Header gear menu for app-level settings (no longer at the bottom of tabs).
@@ -276,14 +257,15 @@ struct ContentView: View {
     }
 
     private var heartbeatDetail: String {
-        guard !device.devices.isEmpty else { return "No device mounted." }
-        var parts = ["Keeping the LED device alive — touches the card every 2 min. Click to do it now."]
-        if let last = device.lastHeartbeat { parts.append("Last touch \(relative(last)).") }
+        guard !device.devices.isEmpty else { return "No device mounted" }
+        var parts = ["Device kept alive (every 2 min)"]
+        if let last = device.lastHeartbeat { parts.append("last \(relative(last))") }
         if let next = device.nextHeartbeat {
             let secs = max(0, Int(next.timeIntervalSince(device.now)))
-            parts.append(String(format: "Next in %d:%02d.", secs / 60, secs % 60))
+            parts.append(String(format: "next %d:%02d", secs / 60, secs % 60))
         }
-        return parts.joined(separator: " ")
+        parts.append("click to ping")
+        return parts.joined(separator: " · ")
     }
 
     private func relative(_ date: Date) -> String {

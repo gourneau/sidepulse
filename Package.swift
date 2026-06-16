@@ -6,9 +6,6 @@ let package = Package(
     platforms: [
         .macOS(.v13)
     ],
-    dependencies: [
-        .package(url: "https://github.com/jasudev/AxisTooltip.git", branch: "main")
-    ],
     targets: [
         // Shared XPC protocol + constants, compiled into both the app and helper.
         .target(
@@ -18,10 +15,7 @@ let package = Package(
         // The menu-bar app.
         .executableTarget(
             name: "SDRGB",
-            dependencies: [
-                "SDRGBShared",
-                .product(name: "AxisTooltip", package: "AxisTooltip")
-            ],
+            dependencies: ["SDRGBShared"],
             path: "Sources/SDRGB"
         ),
         // The privileged root LaunchDaemon (installed via SMAppService).

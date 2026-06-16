@@ -7,6 +7,10 @@ struct SDRGBApp: App {
     @StateObject private var wake = WakeGuard.shared
 
     init() {
+        // Make this app's native tooltips (.help) pop almost instantly instead of
+        // the ~1.5s system default. Per-app only (our UserDefaults domain).
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 80])
+
         // Safe maintenance flag: remove the login item and quit WITHOUT starting
         // the app or touching any device volume. Runs before the DeviceManager
         // (@StateObject) is ever created.
