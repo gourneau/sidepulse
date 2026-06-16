@@ -408,37 +408,34 @@ struct ContentView: View {
     }
 
     private var keepAwakeControls: some View {
+        // Two independent, always-visible toggles — so lid-closed can always be
+        // turned back off (unchecking it restores normal lid-close sleep).
         VStack(alignment: .leading, spacing: 3) {
             Toggle(isOn: $wake.keepAwake) {
                 Label("Keep Mac awake", systemImage: "cup.and.saucer")
             }
             .toggleStyle(.checkbox).font(.caption)
 
-            if wake.keepAwake {
-                Toggle(isOn: Binding(
-                    get: { wake.lidClosed },
-                    set: { wake.setLidClosed($0) }
-                )) {
-                    HStack(spacing: 4) {
-                        Text("…even with the lid closed")
-                        if wake.lidClosedBusy { ProgressView().controlSize(.mini) }
-                    }
+            Toggle(isOn: Binding(
+                get: { wake.lidClosed },
+                set: { wake.setLidClosed($0) }
+            )) {
+                HStack(spacing: 4) {
+                    Label("Keep awake with lid closed", systemImage: "laptopcomputer")
+                    if wake.lidClosedBusy { ProgressView().controlSize(.mini) }
                 }
-                .toggleStyle(.checkbox).font(.caption2)
-                .padding(.leading, 16)
-                .disabled(wake.lidClosedBusy)
+            }
+            .toggleStyle(.checkbox).font(.caption)
+            .disabled(wake.lidClosedBusy)
 
-                if wake.lidClosed {
-                    Text("Mac won't sleep even with the lid closed — keep it on power; can run warm.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .padding(.leading, 16)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let err = wake.lidClosedError {
-                    Text(err).font(.caption2).foregroundStyle(.orange)
-                        .padding(.leading, 16)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            if wake.lidClosed {
+                Text("Mac won't sleep even with the lid closed — keep it on power; can run warm.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let err = wake.lidClosedError {
+                Text(err).font(.caption2).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
