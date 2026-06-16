@@ -191,16 +191,27 @@ final class DeviceManager: ObservableObject {
 
     private var powerSource: CFRunLoopSource?
 
+    private var chargingTimer: Timer?
+
     private func setupPowerNotification() {
         powerSourceChanged()   // initial
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        guard let src = IOPSNotificationCreateRunLoopSource({ context in
+        if let src = IOPSNotificationCreateRunLoopSource({ context in
             guard let context else { return }
             let mgr = Unmanaged<DeviceManager>.fromOpaque(context).takeUnretainedValue()
             Task { @MainActor in mgr.powerSourceChanged() }
-        }, ctx)?.takeRetainedValue() else { return }
-        CFRunLoopAddSource(CFRunLoopGetMain(), src, .defaultMode)
-        powerSource = src
+        }, ctx)?.takeRetainedValue() {
+            CFRunLoopAddSource(CFRunLoopGetMain(), src, .defaultMode)
+            powerSource = src
+        }
+        // Backstop poll (power notifications can lag): react within ~3s. Cheap —
+        // just a power read, no device I/O.
+        let t = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.powerSourceChanged() }
+        }
+        t.tolerance = 1
+        RunLoop.main.add(t, forMode: .common)
+        chargingTimer = t
     }
 
     private func powerSourceChanged() {

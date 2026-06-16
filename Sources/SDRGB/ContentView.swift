@@ -1,4 +1,5 @@
 import SwiftUI
+import AxisTooltip
 
 struct ContentView: View {
     @EnvironmentObject var device: DeviceManager
@@ -20,7 +21,8 @@ struct ContentView: View {
     @State private var statusFlash = false
     @State private var heartBeating = false
     @State private var colorEditMetric: String?
-    @State private var hoverInfo: String?
+    @State private var showDotTip = false
+    @State private var showHeartTip = false
 
     enum Tab: String, CaseIterable, Identifiable {
         case color = "Color"
@@ -173,15 +175,13 @@ struct ContentView: View {
                     .overlay(Circle().stroke(.quaternary))
                     .scaleEffect(statusFlash ? 1.8 : 1.0)
                     .animation(.easeOut(duration: 0.45), value: statusFlash)
-                    .onHover { hoverInfo = $0 ? statusTooltip : nil }
+                    .onHover { showDotTip = $0 }
+                    .axisToolTip(isPresented: $showDotTip, alignment: .bottom,
+                                 constant: ATConstant(axisMode: .bottom)) {
+                        tipCard(statusTooltip)
+                    }
 
-                // Same slot shows hover details (no extra/empty line).
-                if let info = hoverInfo {
-                    Text(info).font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.tail)
-                } else {
-                    deviceLabel
-                }
+                deviceLabel
 
                 Spacer()
 
@@ -236,8 +236,20 @@ struct ContentView: View {
                        : .default,
                        value: heartBeating)
             .onAppear { heartBeating = true }
-            .onHover { hoverInfo = $0 ? heartbeatDetail : nil }
+            .onHover { showHeartTip = $0 }
+            .axisToolTip(isPresented: $showHeartTip, alignment: .bottom,
+                         constant: ATConstant(axisMode: .bottom)) {
+                tipCard(heartbeatDetail)
+            }
             .onTapGesture { device.beatNow() }
+    }
+
+    private func tipCard(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 9).padding(.vertical, 6)
+            .frame(maxWidth: 240, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Header gear menu for app-level settings (no longer at the bottom of tabs).
