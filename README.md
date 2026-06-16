@@ -30,8 +30,16 @@ LED devices — and, most importantly, a **keepalive that touches each device ev
   reference, and a "Writing…" busy state.
 - **Status banner**: clear success/warning/error messages (e.g. "Updated SDRGB",
   or what to do if a write fails).
+- **Keep Mac awake**: a footer toggle that prevents the Mac from sleeping (so the
+  keepalive keeps running while you're away). The default uses an IOKit power
+  assertion (lid open, **no permissions**). An opt-in **"…even with the lid
+  closed"** sets the kernel `SleepDisabled` flag via `pmset disablesleep`, which
+  needs **admin** (one macOS password/Touch ID prompt); it reflects the real flag
+  on launch, reverts on disable/quit, and clears on reboot. Keep the Mac on power
+  in lid-closed mode — it can run warm.
 - **Launch at login** toggle (works once installed in `/Applications`); a subtle
-  keepalive line sits at the bottom — it should just work.
+  keepalive line sits at the bottom — it should just work. Status detail (time)
+  shows on hover, not as ticking numbers.
 
 The inline color editor is used instead of the native macOS color picker on
 purpose: the system `NSColorPanel` is unreliable inside a menu-bar (accessory)

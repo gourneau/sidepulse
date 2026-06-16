@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var device: DeviceManager
+    @EnvironmentObject var wake: WakeGuard
     @Environment(\.openWindow) private var openWindow
 
     @State private var tab: Tab = .color
@@ -50,9 +51,10 @@ struct ContentView: View {
             }
 
             if let st = device.status {
-                Label("\(st.text) · \(relative(st.date))", systemImage: statusIcon(st.level))
+                Label(st.text, systemImage: statusIcon(st.level))
                     .font(.caption).foregroundStyle(statusColor(st.level))
                     .fixedSize(horizontal: false, vertical: true)
+                    .help(relative(st.date))
             }
 
             Divider()
@@ -97,16 +99,32 @@ struct ContentView: View {
         device.loadCurrentProgram()
     }
 
+    /// Open the spec window and force it in front of the menu-bar popover (an
+    /// accessory app otherwise opens it behind, which looks wrong).
+    private func openSpec() {
+        openWindow(id: "spec")
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            for w in NSApp.windows where w.title == "LEDS.TXT Format" {
+                w.makeKeyAndOrderFront(nil)
+                w.orderFrontRegardless()
+            }
+        }
+    }
+
     // MARK: - Live sending
 
     private func liveSend() {
         switch tab {
         case .color:
+            activePreset = nil   // a solid color means no preset is active
             device.sendLive(LEDProgram.solid(color: color, brightness: Int(brightness)))
         case .perLED:
+            activePreset = nil
             let colors = (0..<ledCount).map { Optional(perLEDColors[$0]) }
             device.sendLive(LEDProgram.perLED(colors, brightness: Int(brightness)))
         case .presets:
+            // Brightness/speed/animated keep the same preset active.
             if let id = activePreset,
                let preset = LEDProgram.presets.first(where: { $0.id == id }) {
                 device.sendLive(preset.make(ledCount, Int(brightness), animatedPresets, presetSpeed))
@@ -149,26 +167,29 @@ struct ContentView: View {
     }
 
     /// Small, unobtrusive keepalive line for the footer — it should just work.
+    /// Static text (no ticking numbers); details are on hover.
     private var heartbeatLine: some View {
         HStack(spacing: 5) {
             Image(systemName: "heart")
                 .foregroundStyle(device.lastHeartbeatOK ? .secondary : .tertiary)
-            Text(heartbeatText).foregroundStyle(.secondary)
+            Text(device.devices.isEmpty ? "keepalive paused" : "keepalive active")
+                .foregroundStyle(.secondary)
             Button("beat") { device.beatNow() }
                 .buttonStyle(.plain).foregroundStyle(.tertiary)
         }
         .font(.caption2)
+        .help(heartbeatDetail)
     }
 
-    private var heartbeatText: String {
-        guard !device.devices.isEmpty else { return "keepalive paused" }
+    private var heartbeatDetail: String {
+        guard !device.devices.isEmpty else { return "No device connected." }
         var parts: [String] = []
-        if let last = device.lastHeartbeat { parts.append("kept alive \(relative(last))") }
+        if let last = device.lastHeartbeat { parts.append("last kept alive \(relative(last))") }
         if let next = device.nextHeartbeat {
             let secs = max(0, Int(next.timeIntervalSince(device.now)))
-            parts.append(String(format: "next %d:%02d", secs / 60, secs % 60))
+            parts.append(String(format: "next in %d:%02d", secs / 60, secs % 60))
         }
-        return parts.isEmpty ? "keepalive armed" : parts.joined(separator: " · ")
+        return parts.isEmpty ? "Keepalive armed." : parts.joined(separator: " · ")
     }
 
     private func relative(_ date: Date) -> String {
@@ -185,7 +206,7 @@ struct ContentView: View {
             ColorEditor(color: $color)
             brightnessSlider
             HStack {
-                Button("Off") { device.send(LEDProgram.off()) }
+                Button("Off") { activePreset = nil; device.send(LEDProgram.off()) }
                 Spacer()
                 Text("Live").font(.caption2).foregroundStyle(.secondary)
             }
@@ -215,7 +236,7 @@ struct ContentView: View {
             ColorEditor(color: bindingForLED(selectedLED))
             brightnessSlider
             HStack {
-                Button("Off") { device.send(LEDProgram.off()) }
+                Button("Off") { activePreset = nil; device.send(LEDProgram.off()) }
                 Spacer()
                 Text("Live").font(.caption2).foregroundStyle(.secondary)
             }
@@ -274,7 +295,7 @@ struct ContentView: View {
                 let showing = device.infoActive && device.displayedMetricID == metric.id
                 Toggle(isOn: Binding(
                     get: { device.enabledMetrics.contains(metric.id) },
-                    set: { _ in device.toggleMetric(metric.id) }
+                    set: { _ in activePreset = nil; device.toggleMetric(metric.id) }
                 )) {
                     HStack(spacing: 8) {
                         Circle().fill(metric.color).frame(width: 11, height: 11)
@@ -329,10 +350,7 @@ struct ContentView: View {
                 Button { reloadProgram() } label: { Label("Reload", systemImage: "arrow.clockwise") }
                     .buttonStyle(.borderless).font(.caption)
                     .disabled(device.selectedDevice == nil || busy)
-                Button {
-                    openWindow(id: "spec")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
+                Button { openSpec() } label: {
                     Label("Format help", systemImage: "book")
                 }
                 .buttonStyle(.borderless).font(.caption)
@@ -347,7 +365,7 @@ struct ContentView: View {
                     .foregroundStyle(validation.isValid ? Color.secondary : Color.orange)
                 Spacer()
                 if busy { Text("Writing…").font(.caption2).foregroundStyle(.secondary) }
-                Button("Send") { device.send(rawText) }
+                Button("Send") { activePreset = nil; device.send(rawText) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!validation.isValid || busy)
             }
@@ -372,6 +390,7 @@ struct ContentView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            keepAwakeControls
             heartbeatLine
             HStack {
                 Toggle("Launch at login", isOn: $loginEnabled)
@@ -381,6 +400,42 @@ struct ContentView: View {
                     }
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.font(.caption)
+            }
+        }
+    }
+
+    private var keepAwakeControls: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Toggle(isOn: $wake.keepAwake) {
+                Label("Keep Mac awake", systemImage: "cup.and.saucer")
+            }
+            .toggleStyle(.checkbox).font(.caption)
+
+            if wake.keepAwake {
+                Toggle(isOn: Binding(
+                    get: { wake.lidClosed },
+                    set: { wake.setLidClosed($0) }
+                )) {
+                    HStack(spacing: 4) {
+                        Text("…even with the lid closed")
+                        if wake.lidClosedBusy { ProgressView().controlSize(.mini) }
+                    }
+                }
+                .toggleStyle(.checkbox).font(.caption2)
+                .padding(.leading, 16)
+                .disabled(wake.lidClosedBusy)
+
+                if wake.lidClosed {
+                    Text("Mac won't sleep even with the lid closed — keep it on power; can run warm.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .padding(.leading, 16)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let err = wake.lidClosedError {
+                    Text(err).font(.caption2).foregroundStyle(.orange)
+                        .padding(.leading, 16)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }

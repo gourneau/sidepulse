@@ -4,6 +4,7 @@ import AppKit
 @main
 struct SDRGBApp: App {
     @StateObject private var device = DeviceManager()
+    @StateObject private var wake = WakeGuard()
 
     init() {
         // Safe maintenance flag: remove the login item and quit WITHOUT starting
@@ -29,6 +30,7 @@ struct SDRGBApp: App {
         MenuBarExtra {
             ContentView()
                 .environmentObject(device)
+                .environmentObject(wake)
         } label: {
             Image(systemName: device.devices.isEmpty ? "lightbulb.slash" : "lightbulb.fill")
         }
