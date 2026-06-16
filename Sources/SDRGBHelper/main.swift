@@ -33,18 +33,21 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     }
 
     func repair(reply: @escaping (String) -> Void) {
-        // Root, so no sudo needed. Kill the hung FAT driver first (that's what's
-        // wedged), then force-unmount and remount our volumes.
-        var log = "pkill fskit.msdos:\n" + run("/usr/bin/pkill", ["-9", "-f", "com.apple.fskit.msdos"])
-        Thread.sleep(forTimeInterval: 1)
-        for v in ["SDRGB", "USBDOT"] {
-            log += "\nunmount \(v):\n" + run("/usr/sbin/diskutil", ["unmount", "force", "/Volumes/\(v)"])
-        }
-        Thread.sleep(forTimeInterval: 1)
-        for v in ["SDRGB", "USBDOT"] {
-            log += "\nmount \(v):\n" + run("/usr/sbin/diskutil", ["mount", v])
-        }
-        reply(log)
+        // Root, so no sudo needed. Kill the hung FAT driver, force-unmount any
+        // wedged mounts, then remount — by volume name AND by mounting the whole
+        // disk by its identifier (more reliable; `diskutil mount disk7`).
+        let script = """
+        /usr/bin/pkill -9 -f 'com.apple.fskit.msdos' 2>/dev/null
+        sleep 1
+        for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null; done
+        sleep 1
+        for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null; done
+        for id in $(/usr/sbin/diskutil list | /usr/bin/awk '/SDRGB|USBDOT/{print $NF}'); do
+          /usr/sbin/diskutil mountDisk "$id" 2>/dev/null
+        done
+        exit 0
+        """
+        reply(run("/bin/sh", ["-c", script]))
     }
 
     private func run(_ path: String, _ args: [String]) -> String {

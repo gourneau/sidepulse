@@ -173,6 +173,9 @@ final class WakeGuard: ObservableObject {
         for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null || true; done
         sleep 1
         for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null || true; done
+        for id in $(/usr/sbin/diskutil list | /usr/bin/awk '/SDRGB|USBDOT/{print $NF}'); do
+          /usr/sbin/diskutil mountDisk "$id" 2>/dev/null || true
+        done
         exit 0
         """
         let tmp = NSTemporaryDirectory() + "sdrgb-repair-\(UUID().uuidString).sh"

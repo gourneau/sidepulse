@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import IOKit.ps
 
 /// A mounted sdstatusbar device (one volume).
 struct Device: Identifiable, Equatable, Sendable {
@@ -125,9 +126,12 @@ final class DeviceManager: ObservableObject {
     @Published var batteryBreatheWhenCharging = true {
         didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
     }
-    @Published var batteryBreatheSpeed = 0.5 {
+    /// 0 = slowest. Defaults low for a calm, slow breath.
+    @Published var batteryBreatheSpeed = 0.2 {
         didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
     }
+    /// Current charge power in watts (for display in the app only).
+    @Published private(set) var batteryWatts: Double?
     /// Output brightness for Info mode (0…255).
     @Published var infoBrightness = 255 {
         didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
@@ -176,10 +180,35 @@ final class DeviceManager: ObservableObject {
         startHeartbeat()
         startTick()
         startMetrics()
+        setupPowerNotification()
         // Detect connected devices (off-thread); the scan handler beats them.
         rescan()
         // On launch, see if the FAT driver is already wedged (stalls Finder too).
         checkHungDriver()
+    }
+
+    // MARK: - Power source (charging) — updates immediately on plug/unplug
+
+    private var powerSource: CFRunLoopSource?
+
+    private func setupPowerNotification() {
+        powerSourceChanged()   // initial
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        guard let src = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            let mgr = Unmanaged<DeviceManager>.fromOpaque(context).takeUnretainedValue()
+            Task { @MainActor in mgr.powerSourceChanged() }
+        }, ctx)?.takeRetainedValue() else { return }
+        CFRunLoopAddSource(CFRunLoopGetMain(), src, .defaultMode)
+        powerSource = src
+    }
+
+    private func powerSourceChanged() {
+        let info = BatteryReader.current()
+        let changed = info.charging != batteryCharging
+        batteryCharging = info.charging
+        batteryWatts = info.charging ? sysMetrics.chargingWatts() : nil
+        if changed && infoActive { showInfoFrame(advance: false, force: true) }
     }
 
     // MARK: - Detection
@@ -266,6 +295,12 @@ final class DeviceManager: ObservableObject {
             setStatus(.error, validation.message ?? "Invalid program.")
             return validation
         }
+        // Don't give up on stale state: re-check /Volumes (free, no device I/O)
+        // before declaring "no device" — the volume may have just (re)mounted.
+        if selectedDevice == nil {
+            let found = DeviceManager.scanVolumes()
+            if found != devices { applyScan(found) }
+        }
         guard let device = selectedDevice else {
             setStatus(.error, "No device connected.")
             return validation
@@ -347,7 +382,9 @@ final class DeviceManager: ObservableObject {
         var values: [String: Double] = [:]
         for metric in metrics { values[metric.id] = metric.read() }
         metricValues = values
-        batteryCharging = BatteryReader.current().charging
+        let info = BatteryReader.current()
+        batteryCharging = info.charging
+        batteryWatts = info.charging ? sysMetrics.chargingWatts() : nil
     }
 
     /// Show the current metric across the whole strip, cycling to the next one
@@ -366,7 +403,7 @@ final class DeviceManager: ObservableObject {
         var program: String
         if id == "battery" && batteryCharging && batteryBreatheWhenCharging {
             // Gentle breathing while charging, at the chosen speed.
-            let dur = LEDProgram.frameMs(batteryBreatheSpeed, slow: 2600, fast: 600)
+            let dur = LEDProgram.frameMs(batteryBreatheSpeed, slow: 4000, fast: 800)
             program = LEDProgram.pulseBar(hex: hex, value: value, ledCount: device.ledCount, durationMs: dur)
         } else {
             program = LEDProgram.fullBar(hex: hex, value: value, ledCount: device.ledCount)
@@ -440,7 +477,7 @@ final class DeviceManager: ObservableObject {
         switch result {
         case .stuck:
             stuckVolumes.insert(volume)
-            setStatus(.warning, "Device stopped responding — I/O paused. Reconnect it to recover.")
+            setStatus(.warning, "Device stopped responding — use Repair to recover.")
             evaluateAutoRepair()
         case .failed:
             switch kind {
@@ -553,7 +590,7 @@ final class DeviceManager: ObservableObject {
             guard let self else { return }
             self.checkHungDriver()   // confirm the driver is no longer pegged
             if self.devices.isEmpty {
-                self.setStatus(.warning, "Couldn’t reconnect — try unplugging and replugging.")
+                self.setStatus(.warning, "Couldn’t reconnect — try Repair again; reboot as a last resort.")
             } else {
                 self.setStatus(.success, "Reconnected")
             }

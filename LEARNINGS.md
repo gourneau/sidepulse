@@ -52,6 +52,14 @@ This needs **root**. In the app it runs through the privileged helper (below), s
 it's passwordless after the one-time approval. **Auto-repair** does this once,
 ~30s after the device looks wedged/disconnected (only if it can run silently).
 
+**Recovery is software-only — no replug/power-cycle needed.** After the driver is
+killed the card stays present as a raw disk (e.g. `diskutil list` shows
+`/dev/disk7  SDRGB`, unmounted). Just remount it: `diskutil mount disk7` (or
+`diskutil mount SDRGB`) brings `/Volumes/SDRGB` back. macOS has **no supported way
+to power-cycle the built-in SD reader slot** (its power is reader-managed; `eject`
+only logically removes it and needs a physical reinsert) — but you don't need to,
+because remount works. So Repair = kill `fskit.msdos` → `diskutil mount`.
+
 ### Diagnosing
 
 ```sh

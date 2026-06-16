@@ -198,7 +198,7 @@ struct ContentView: View {
                 heartView
             }
             if device.anyDeviceStuck {
-                Label("Device not responding — writes paused. Reconnect it to recover.",
+                Label("Device not responding — use Repair (gear menu) to recover.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -359,6 +359,12 @@ struct ContentView: View {
         }
     }
 
+    private var chargingText: String {
+        guard device.batteryCharging else { return "On battery" }
+        if let w = device.batteryWatts, w > 0.1 { return String(format: "Charging · %.1f W", w) }
+        return "Charging"
+    }
+
     private func resendActivePreset() {
         guard let id = activePreset,
               let preset = LEDProgram.presets.first(where: { $0.id == id }) else { return }
@@ -413,6 +419,12 @@ struct ContentView: View {
                     }
                     if metric.id == "battery" && device.enabledMetrics.contains("battery") {
                         VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 5) {
+                                Image(systemName: device.batteryCharging ? "bolt.fill" : "bolt.slash")
+                                    .font(.caption2)
+                                    .foregroundStyle(device.batteryCharging ? .green : .secondary)
+                                Text(chargingText).font(.caption2).foregroundStyle(.secondary)
+                            }
                             Toggle("Breathe while charging", isOn: $device.batteryBreatheWhenCharging)
                                 .toggleStyle(.checkbox).font(.caption2)
                             if device.batteryBreatheWhenCharging {
