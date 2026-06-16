@@ -54,9 +54,6 @@ struct ContentView: View {
                 case .awake: awakeTab
                 }
             }
-
-            Divider()
-            footer
         }
         .padding(14)
         .frame(width: 460)
@@ -157,11 +154,13 @@ struct ContentView: View {
                     .overlay(Circle().stroke(.quaternary))
                     .scaleEffect(statusFlash ? 1.8 : 1.0)
                     .animation(.easeOut(duration: 0.45), value: statusFlash)
-                    .help(statusTooltip)
+                    .instantTip(statusTooltip)
 
                 deviceLabel
 
                 Spacer()
+
+                settingsMenu
 
                 heartView
             }
@@ -202,8 +201,25 @@ struct ContentView: View {
                        : .easeInOut(duration: 0.85).repeatForever(autoreverses: true),
                        value: heartBeating)
             .onAppear { heartBeating = true }
-            .help(heartbeatDetail)
+            .instantTip(heartbeatDetail, trailing: true)
             .onTapGesture { device.beatNow() }
+    }
+
+    /// Header gear menu for app-level settings (no longer at the bottom of tabs).
+    private var settingsMenu: some View {
+        Menu {
+            Toggle("Launch at login", isOn: Binding(
+                get: { loginEnabled },
+                set: { loginEnabled = LoginItem.setEnabled($0) }
+            ))
+            Divider()
+            Button("Quit SDRGB") { NSApplication.shared.terminate(nil) }
+        } label: {
+            Image(systemName: "gearshape")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     private var heartbeatDetail: String {
@@ -354,6 +370,34 @@ struct ContentView: View {
                         ))
                         .padding(.leading, 22)
                     }
+                    if metric.id == "battery" && device.enabledMetrics.contains("battery") {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Toggle("Breathe while charging", isOn: $device.batteryBreatheWhenCharging)
+                                .toggleStyle(.checkbox).font(.caption2)
+                            if device.batteryBreatheWhenCharging {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "tortoise").font(.caption2).foregroundStyle(.secondary)
+                                    Slider(value: $device.batteryBreatheSpeed, in: 0...1)
+                                    Image(systemName: "hare").font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .padding(.leading, 22)
+                    }
+                }
+            }
+
+            if device.infoActive {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text("Brightness").font(.caption)
+                        Spacer()
+                        Text("\(device.infoBrightness)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Slider(value: Binding(
+                        get: { Double(device.infoBrightness) },
+                        set: { device.infoBrightness = Int($0) }
+                    ), in: 0...255, step: 1)
                 }
             }
 
@@ -431,20 +475,6 @@ struct ContentView: View {
     }
 
     // MARK: - Footer
-
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Toggle("Launch at login", isOn: $loginEnabled)
-                    .toggleStyle(.checkbox).font(.caption)
-                    .onChange(of: loginEnabled) { newValue in
-                        loginEnabled = LoginItem.setEnabled(newValue)
-                    }
-                Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }.font(.caption)
-            }
-        }
-    }
 
     // MARK: - Awake tab
 

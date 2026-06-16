@@ -144,14 +144,14 @@ enum LEDProgram {
 
     /// Like `fullBar`, but the lit LEDs gently breathe (off → color → off) — used
     /// for the battery metric while charging. Loops on-device.
-    static func pulseBar(hex: String, value: Double, ledCount: Int) -> String {
+    static func pulseBar(hex: String, value: Double, ledCount: Int, durationMs: Int = 1600) -> String {
         let n = max(1, ledCount)
         let v = min(1, max(0, value))
         var lit = Int((v * Double(n)).rounded())
         if v > 0 { lit = max(1, lit) }
         lit = min(lit, n)
         guard lit > 0 else { return off() }
-        let segs = (0..<lit).map { "\($0):\(hex) 1.6s pulse" }
+        let segs = (0..<lit).map { "\($0):\(hex) \(durationMs)ms pulse" }
         return "off\n" + segs.joined(separator: "; ") + "\nrepeat"
     }
 

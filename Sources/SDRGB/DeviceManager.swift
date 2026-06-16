@@ -121,12 +121,23 @@ final class DeviceManager: ObservableObject {
     @Published private(set) var displayedMetricID: String?
     /// Whether the Mac is currently charging (for the battery breathing effect).
     @Published private(set) var batteryCharging = false
+    /// Battery breathes while charging (toggle), and how fast (0…1).
+    @Published var batteryBreatheWhenCharging = true {
+        didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
+    }
+    @Published var batteryBreatheSpeed = 0.5 {
+        didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
+    }
+    /// Output brightness for Info mode (0…255).
+    @Published var infoBrightness = 255 {
+        didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
+    }
 
     /// Last manual program (color/preset/raw), restored after wake when
     /// "turn LEDs off when the Mac sleeps" is on.
     private var lastUserProgram: String?
     /// When true, switch the LEDs off as the Mac sleeps and restore on wake.
-    @Published var ledsOffOnSleep = false
+    @Published var ledsOffOnSleep = true
 
     /// Available metrics. Battery = white, CPU = blue, Memory = green.
     private(set) lazy var metrics: [Metric] = [
@@ -345,13 +356,15 @@ final class DeviceManager: ObservableObject {
         guard metrics.contains(where: { $0.id == id }) else { return }
         let value = metricValues[id] ?? 0
         let hex = effectiveHex(id)
-        let program: String
-        if id == "battery" && batteryCharging {
-            // Gentle breathing while charging.
-            program = LEDProgram.pulseBar(hex: hex, value: value, ledCount: device.ledCount)
+        var program: String
+        if id == "battery" && batteryCharging && batteryBreatheWhenCharging {
+            // Gentle breathing while charging, at the chosen speed.
+            let dur = LEDProgram.frameMs(batteryBreatheSpeed, slow: 2600, fast: 600)
+            program = LEDProgram.pulseBar(hex: hex, value: value, ledCount: device.ledCount, durationMs: dur)
         } else {
             program = LEDProgram.fullBar(hex: hex, value: value, ledCount: device.ledCount)
         }
+        program = LEDProgram.withBrightness(program, infoBrightness)
         if !force && program == lastInfoProgram { return }
         lastInfoProgram = program
         deliver(program, kind: .info)
