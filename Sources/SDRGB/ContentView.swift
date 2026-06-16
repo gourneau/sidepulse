@@ -20,6 +20,7 @@ struct ContentView: View {
     @State private var statusFlash = false
     @State private var heartBeating = false
     @State private var colorEditMetric: String?
+    @State private var hoverInfo: String?
 
     enum Tab: String, CaseIterable, Identifiable {
         case color = "Color"
@@ -36,6 +37,15 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+
+            // One fixed spot for hover details (dot / heart) — no floating bubbles.
+            Text(hoverInfo ?? " ")
+                .font(.caption2)
+                .foregroundStyle(hoverInfo == nil ? .clear : .secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             Divider()
 
             Picker("", selection: $tab) {
@@ -89,9 +99,9 @@ struct ContentView: View {
             ? "No device connected"
             : "Connected: \(device.selectedDevice?.name ?? "device") (\(ledCount) LEDs)")
         if let st = device.status {
-            parts.append("\(st.text) · \(relative(st.date))")
+            parts.append("\(st.text) \(relative(st.date))")
         }
-        return parts.joined(separator: "\n")
+        return parts.joined(separator: " · ")
     }
 
     /// Briefly pulse the dot when something happens (an update/error).
@@ -154,7 +164,7 @@ struct ContentView: View {
                     .overlay(Circle().stroke(.quaternary))
                     .scaleEffect(statusFlash ? 1.8 : 1.0)
                     .animation(.easeOut(duration: 0.45), value: statusFlash)
-                    .instantTip(statusTooltip)
+                    .onHover { hoverInfo = $0 ? statusTooltip : nil }
 
                 deviceLabel
 
@@ -201,7 +211,7 @@ struct ContentView: View {
                        : .easeInOut(duration: 0.85).repeatForever(autoreverses: true),
                        value: heartBeating)
             .onAppear { heartBeating = true }
-            .instantTip(heartbeatDetail, trailing: true)
+            .onHover { hoverInfo = $0 ? heartbeatDetail : nil }
             .onTapGesture { device.beatNow() }
     }
 
