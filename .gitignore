@@ -1,0 +1,14 @@
+# Swift / SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Built app bundle
+build/
+
+# macOS
+.DS_Store
+
+# Editor
+*.xcuserstate
+.vscode/
