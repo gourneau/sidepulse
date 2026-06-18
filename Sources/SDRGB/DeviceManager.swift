@@ -800,22 +800,6 @@ final class DeviceManager: ObservableObject {
         return (true, out.contains("\"Ejected\" = Yes"))
     }
 
-    /// Last-resort recovery for the half-ejected state: a sleep/wake cycle is the
-    /// only software lever that power-cycles the SD reader so it re-probes the card
-    /// (`IOPMResetPowerStateOnWake = Yes`). Releases keep-awake first; `didWake()`
-    /// re-scans + heals on wake. May still need a physical re-seat.
-    func recoverViaSleep() {
-        WakeGuard.shared.keepAwake = false      // don't fight our own sleep request
-        setStatus(.info, "Sleeping to re-probe the card reader…")
-        log(.repair, "Sleep/wake re-probe requested")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-            p.arguments = ["sleepnow"]
-            try? p.run()
-        }
-    }
-
     nonisolated static func isFskitHung() -> Bool {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/ps")
