@@ -124,15 +124,31 @@ struct ContentView: View {
         .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    /// Card is in the reader but never mounted (device reset/crashed without
-    /// re-enumerating a disk). The repair forces macOS to re-probe the card.
+    /// Card is in the reader but never mounted. Two flavours: a normal ghost
+    /// (Repair can re-probe) and the half-ejected hardware state (only a sleep/
+    /// wake re-probe or a physical re-seat can clear it).
     private var ghostedBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "sdcard").foregroundStyle(.orange)
-            Text("Device detected but not mounted — macOS didn’t enumerate it. Repair?")
-                .font(.caption).fixedSize(horizontal: false, vertical: true)
-            Spacer()
-            Button("Repair") { runRepair() }.disabled(wake.repairBusy)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "sdcard").foregroundStyle(.orange)
+                Text(device.ghostEjected
+                     ? "Card stuck half-ejected in the reader (hardware) — macOS won’t mount it."
+                     : "Device detected but not mounted — macOS didn’t enumerate it.")
+                    .font(.caption).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                if device.ghostEjected {
+                    Text("Re-seat the card to fix, or try:")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Sleep & re-probe") { device.recoverViaSleep() }
+                        .help("Sleeps the Mac so the SD reader power-cycles and re-probes the card on wake. May still need a physical re-seat.")
+                } else {
+                    Spacer()
+                    Button("Repair") { runRepair() }.disabled(wake.repairBusy)
+                }
+            }
         }
         .padding(8)
         .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))

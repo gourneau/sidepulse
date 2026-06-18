@@ -182,11 +182,14 @@ final class DeviceManager: ObservableObject {
     /// True when a `com.apple.fskit.msdos` process is detected pegged at ~100% CPU
     /// (the hung-FAT-driver state) — the UI offers a one-click Repair.
     @Published private(set) var hungDriverDetected = false
-    /// True when the SD card reader reports our card present (Product Name
-    /// "SDLED…") but it never enumerated as a mounted volume — the "ghost card"
-    /// state seen when the device resets/crashes without re-presenting a disk.
-    /// The watchdog auto-repairs this just like a wedge.
+    /// True when the SD reader has our card's block-storage device but it never
+    /// became a mounted volume — the "ghost card" state seen when the device
+    /// resets/crashes without re-presenting a disk.
     @Published private(set) var deviceGhosted = false
+    /// The precise (and worst) sub-state: the reader latched the card as
+    /// `Ejected = Yes` while it's still physically present. No userspace API can
+    /// un-eject it — only a sleep/wake re-probe or a physical re-seat recovers it.
+    @Published private(set) var ghostEjected = false
 
     /// Available metrics. Battery = white, CPU = blue, Memory = green.
     private(set) lazy var metrics: [Metric] = [
@@ -367,7 +370,7 @@ final class DeviceManager: ObservableObject {
         if changed { beat() }
         if infoActive { showInfoFrame(advance: false, force: true) }
         if found.isEmpty { checkDeviceHealth() }   // is the card ghosting?
-        else if deviceGhosted { deviceGhosted = false }
+        else if deviceGhosted || ghostEjected { deviceGhosted = false; ghostEjected = false }
         evaluateAutoRepair()
     }
 
@@ -725,6 +728,7 @@ final class DeviceManager: ObservableObject {
         inFlightVolumes.removeAll()
         hungDriverDetected = false
         deviceGhosted = false
+        ghostEjected = false
         rescan()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [weak self] in
             guard let self else { return }
@@ -752,37 +756,64 @@ final class DeviceManager: ObservableObject {
     /// otherwise. Never touches the volume — reads the card reader via
     /// `system_profiler` in a bounded child. Triggers auto-repair when found.
     func checkDeviceHealth() {
-        guard devices.isEmpty else { if deviceGhosted { deviceGhosted = false }; return }
+        guard devices.isEmpty else {
+            if deviceGhosted || ghostEjected { deviceGhosted = false; ghostEjected = false }
+            return
+        }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let present = DeviceManager.cardReaderShowsDevice()
+            let probe = DeviceManager.probeSDXC()
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                let ghosted = present && self.devices.isEmpty
+                let ghosted = probe.present && self.devices.isEmpty
                 if ghosted != self.deviceGhosted {
                     self.deviceGhosted = ghosted
-                    if ghosted { self.log(.warning, "Card detected but not mounted") }
+                    if ghosted {
+                        self.log(.warning, probe.ejected
+                            ? "Card stuck half-ejected (hardware) — re-seat or sleep/wake needed"
+                            : "Card detected but not mounted")
+                    }
                 }
+                self.ghostEjected = ghosted && probe.ejected
                 if ghosted { self.everHadDevice = true; self.evaluateAutoRepair() }
             }
         }
     }
 
-    /// True if the built-in SD card reader currently reports our emulated card
-    /// (identifies as "SDLED…"). Bounded by a timeout so a flaky reader can't hang
-    /// us. `system_profiler` reads IOKit, never the (possibly wedged) volume.
-    nonisolated static func cardReaderShowsDevice() -> Bool {
+    /// Probe the SD reader via `ioreg` (bounded child — never the volume). Returns
+    /// whether our card's block-storage device exists at all, and whether it's
+    /// stuck `Ejected = Yes` (present but un-publishable, the unrecoverable-by-
+    /// software state). `AppleSDXCBlockStorageDevice` only exists when a card is/
+    /// was inserted, so its presence + no mounted volume == the ghost-card state.
+    nonisolated static func probeSDXC() -> (present: Bool, ejected: Bool) {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-        p.arguments = ["SPCardReaderDataType"]
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
+        p.arguments = ["-r", "-c", "AppleSDXCBlockStorageDevice", "-l", "-w0"]
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
         let done = DispatchSemaphore(value: 0)
         p.terminationHandler = { _ in done.signal() }
-        do { try p.run() } catch { return false }
-        if done.wait(timeout: .now() + 6) == .timedOut { p.terminate(); return false }
+        do { try p.run() } catch { return (false, false) }
+        if done.wait(timeout: .now() + 6) == .timedOut { p.terminate(); return (false, false) }
         let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return out.localizedCaseInsensitiveContains("SDLED")
+        guard out.contains("AppleSDXCBlockStorageDevice") else { return (false, false) }
+        return (true, out.contains("\"Ejected\" = Yes"))
+    }
+
+    /// Last-resort recovery for the half-ejected state: a sleep/wake cycle is the
+    /// only software lever that power-cycles the SD reader so it re-probes the card
+    /// (`IOPMResetPowerStateOnWake = Yes`). Releases keep-awake first; `didWake()`
+    /// re-scans + heals on wake. May still need a physical re-seat.
+    func recoverViaSleep() {
+        WakeGuard.shared.keepAwake = false      // don't fight our own sleep request
+        setStatus(.info, "Sleeping to re-probe the card reader…")
+        log(.repair, "Sleep/wake re-probe requested")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+            p.arguments = ["sleepnow"]
+            try? p.run()
+        }
     }
 
     nonisolated static func isFskitHung() -> Bool {
