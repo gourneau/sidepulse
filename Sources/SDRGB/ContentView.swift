@@ -37,6 +37,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if device.hungDriverDetected { hungDriverBanner }
+            else if device.deviceGhosted { ghostedBanner }
             Divider()
 
             Picker("", selection: $tab) {
@@ -115,6 +116,20 @@ struct ContentView: View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             Text("macOS's FAT driver is stuck (this also hangs Finder). Repair it?")
+                .font(.caption).fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Repair") { runRepair() }.disabled(wake.repairBusy)
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Card is in the reader but never mounted (device reset/crashed without
+    /// re-enumerating a disk). The repair forces macOS to re-probe the card.
+    private var ghostedBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sdcard").foregroundStyle(.orange)
+            Text("Device detected but not mounted — macOS didn’t enumerate it. Repair?")
                 .font(.caption).fixedSize(horizontal: false, vertical: true)
             Spacer()
             Button("Repair") { runRepair() }.disabled(wake.repairBusy)

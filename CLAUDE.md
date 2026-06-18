@@ -70,6 +70,16 @@ not `openssl`.
   does this via the root helper (`repair`) — passwordless after one-time Login
   Items approval. **Repair mounts by exact volume name only** — never parse
   `diskutil list` + `mountDisk` (it can force-mount an unrelated whole disk).
+- **Two distinct stuck states, one repair.** (1) the CPU wedge above; (2) the
+  **"ghost card"**: the SD reader sees the card (`system_profiler
+  SPCardReaderDataType` shows Product Name `SDLED…`) but it never enumerates as a
+  block device — **absent from `diskutil list`/`/Volumes`, and no msdos process is
+  even running**. `repair` now handles both: it kills the whole fskit user-space
+  stack (`com.apple.fskit.msdos` + `libexec/fskit_agent` + `fskit_helper`) to force
+  macOS to re-probe the card, then retries `diskutil mount <name>` a few times as
+  the disk node reappears. `DeviceManager.checkDeviceHealth()` (the watchdog, run
+  on each beat / scan-empty / wake) detects the ghost state via a bounded
+  `system_profiler` child and arms auto-repair; `deviceGhosted` drives a UI banner.
 - **All device I/O runs in a throwaway child process** (`runIsolated` /
   `readContents` / `performWrite`) with a hard `DispatchSemaphore` timeout
   (`ioTimeout` = 5s). A wedged device gets the child stuck (abandoned, contained),

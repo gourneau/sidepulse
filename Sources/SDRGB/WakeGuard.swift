@@ -177,10 +177,17 @@ final class WakeGuard: ObservableObject {
     nonisolated private static func repairViaAdmin() {
         let script = """
         /usr/bin/pkill -9 -f 'com.apple.fskit.msdos' 2>/dev/null || true
+        /usr/bin/pkill -9 -f 'libexec/fskit_agent' 2>/dev/null || true
+        /usr/bin/pkill -9 -f 'libexec/fskit_helper' 2>/dev/null || true
         sleep 1
         for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null || true; done
-        sleep 1
-        for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null || true; done
+        sleep 2
+        for i in 1 2 3 4 5; do
+          ok=0
+          for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null && ok=1 || true; done
+          [ "$ok" = 1 ] && break
+          sleep 1
+        done
         exit 0
         """
         let tmp = NSTemporaryDirectory() + "sdrgb-repair-\(UUID().uuidString).sh"

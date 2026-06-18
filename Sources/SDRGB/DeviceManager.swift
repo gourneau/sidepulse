@@ -182,6 +182,11 @@ final class DeviceManager: ObservableObject {
     /// True when a `com.apple.fskit.msdos` process is detected pegged at ~100% CPU
     /// (the hung-FAT-driver state) — the UI offers a one-click Repair.
     @Published private(set) var hungDriverDetected = false
+    /// True when the SD card reader reports our card present (Product Name
+    /// "SDLED…") but it never enumerated as a mounted volume — the "ghost card"
+    /// state seen when the device resets/crashes without re-presenting a disk.
+    /// The watchdog auto-repairs this just like a wedge.
+    @Published private(set) var deviceGhosted = false
 
     /// Available metrics. Battery = white, CPU = blue, Memory = green.
     private(set) lazy var metrics: [Metric] = [
@@ -220,8 +225,10 @@ final class DeviceManager: ObservableObject {
         setupPowerNotification()
         // Detect connected devices (off-thread); the scan handler beats them.
         rescan()
-        // On launch, see if the FAT driver is already wedged (stalls Finder too).
+        // On launch, see if the FAT driver is already wedged (stalls Finder too),
+        // or the card is ghosting (present in the reader but never mounted).
         checkHungDriver()
+        checkDeviceHealth()
     }
 
     // MARK: - Power source (charging) — updates immediately on plug/unplug
@@ -275,6 +282,7 @@ final class DeviceManager: ObservableObject {
         rescan()
         beat()
         checkHungDriver()
+        checkDeviceHealth()
         // Re-apply the last LED program — the device often resets across sleep,
         // wiping its program. Give the volume a moment to remount first.
         if let program = lastWrittenLEDS {
@@ -358,6 +366,8 @@ final class DeviceManager: ObservableObject {
         // Keep newly connected devices alive right away and refresh Info mode.
         if changed { beat() }
         if infoActive { showInfoFrame(advance: false, force: true) }
+        if found.isEmpty { checkDeviceHealth() }   // is the card ghosting?
+        else if deviceGhosted { deviceGhosted = false }
         evaluateAutoRepair()
     }
 
@@ -569,7 +579,8 @@ final class DeviceManager: ObservableObject {
             }
         }
         nextHeartbeat = Date().addingTimeInterval(Self.heartbeatInterval)
-        checkHungDriver()   // catch a mid-session FAT-driver wedge (~every 60s)
+        checkHungDriver()      // catch a mid-session FAT-driver wedge (~every 60s)
+        checkDeviceHealth()    // catch the "ghost card" state (no-op when mounted)
     }
 
     /// Force an immediate heartbeat (used by the "Beat now" button).
@@ -679,7 +690,9 @@ final class DeviceManager: ObservableObject {
     /// A device must have been seen this run before we'll auto-repair — so a
     /// device-less Mac never fires the privileged repair (which kills the FAT
     /// driver). Stuck always qualifies.
-    private func needsRepair() -> Bool { anyDeviceStuck || (everHadDevice && devices.isEmpty) }
+    private func needsRepair() -> Bool {
+        anyDeviceStuck || deviceGhosted || (everHadDevice && devices.isEmpty)
+    }
 
     /// Arm/cancel auto-repair based on device health.
     private func evaluateAutoRepair() {
@@ -711,6 +724,7 @@ final class DeviceManager: ObservableObject {
         stuckVolumes.removeAll()
         inFlightVolumes.removeAll()
         hungDriverDetected = false
+        deviceGhosted = false
         rescan()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [weak self] in
             guard let self else { return }
@@ -730,6 +744,45 @@ final class DeviceManager: ObservableObject {
             let hung = DeviceManager.isFskitHung()
             Task { @MainActor [weak self] in self?.hungDriverDetected = hung }
         }
+    }
+
+    /// Watchdog for the "ghost card" state: the SD reader sees our card but it
+    /// never mounted as a volume (a device crash/reset that didn't re-enumerate a
+    /// disk). Only meaningful when we have no mounted device, so it's skipped
+    /// otherwise. Never touches the volume — reads the card reader via
+    /// `system_profiler` in a bounded child. Triggers auto-repair when found.
+    func checkDeviceHealth() {
+        guard devices.isEmpty else { if deviceGhosted { deviceGhosted = false }; return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let present = DeviceManager.cardReaderShowsDevice()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let ghosted = present && self.devices.isEmpty
+                if ghosted != self.deviceGhosted {
+                    self.deviceGhosted = ghosted
+                    if ghosted { self.log(.warning, "Card detected but not mounted") }
+                }
+                if ghosted { self.everHadDevice = true; self.evaluateAutoRepair() }
+            }
+        }
+    }
+
+    /// True if the built-in SD card reader currently reports our emulated card
+    /// (identifies as "SDLED…"). Bounded by a timeout so a flaky reader can't hang
+    /// us. `system_profiler` reads IOKit, never the (possibly wedged) volume.
+    nonisolated static func cardReaderShowsDevice() -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+        p.arguments = ["SPCardReaderDataType"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in done.signal() }
+        do { try p.run() } catch { return false }
+        if done.wait(timeout: .now() + 6) == .timedOut { p.terminate(); return false }
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return out.localizedCaseInsensitiveContains("SDLED")
     }
 
     nonisolated static func isFskitHung() -> Bool {

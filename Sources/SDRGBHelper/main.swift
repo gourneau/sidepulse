@@ -34,14 +34,26 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     }
 
     func repair(reply: @escaping (String) -> Void) {
-        // Root, so no sudo needed. Kill the hung FAT driver, force-unmount any
-        // wedged mounts, then remount by exact volume name (SDRGB/USBDOT).
+        // Root, so no sudo needed. Two failure modes to recover, no reboot:
+        //   1. The FAT driver wedged at ~100% CPU on a mounted volume.
+        //   2. The card is seen by the reader but never enumerated as a disk
+        //      (absent from `diskutil list`) — nothing to mount yet.
+        // Kill the FAT driver AND the wider fskit user-space stack so macOS tears
+        // it down and re-probes the card from scratch, then retry the mount-by-
+        // exact-name a few times while the block device (re)appears.
         let script = """
         /usr/bin/pkill -9 -f 'com.apple.fskit.msdos' 2>/dev/null
+        /usr/bin/pkill -9 -f 'libexec/fskit_agent' 2>/dev/null
+        /usr/bin/pkill -9 -f 'libexec/fskit_helper' 2>/dev/null
         sleep 1
         for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null; done
-        sleep 1
-        for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null; done
+        sleep 2
+        for i in 1 2 3 4 5; do
+          ok=0
+          for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null && ok=1; done
+          [ "$ok" = 1 ] && break
+          sleep 1
+        done
         exit 0
         """
         reply(run("/bin/sh", ["-c", script]))
