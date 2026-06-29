@@ -1,4 +1,5 @@
 import Foundation
+import IOKit
 import IOKit.ps
 
 /// Reads the Mac's battery level (0...1) and charging state.
@@ -31,6 +32,20 @@ final class SystemMetrics {
     private var prevCPU: (used: Double, total: Double)?
 
     func batteryLevel() -> Double { BatteryReader.current().fraction }
+
+    /// Instantaneous charge power in watts (Voltage × Amperage from
+    /// AppleSmartBattery). Positive while charging; nil if unavailable.
+    func chargingWatts() -> Double? {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                  IOServiceMatching("AppleSmartBattery"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+        var propsRef: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(service, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+              let props = propsRef?.takeRetainedValue() as? [String: Any] else { return nil }
+        guard let mV = props["Voltage"] as? Int, let mA = props["Amperage"] as? Int else { return nil }
+        return Double(mV) / 1000.0 * Double(mA) / 1000.0
+    }
 
     /// Fraction of CPU time spent non-idle since the previous call (0...1).
     func cpuLoad() -> Double {

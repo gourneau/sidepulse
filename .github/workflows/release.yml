@@ -1,0 +1,72 @@
+name: Release
+
+# Build, sign, notarize, and publish a GitHub release when you push a tag like
+# v0.1.0-beta.2.  (You don't build locally — a macOS runner does it all.)
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   DEVELOPER_ID_P12_BASE64    base64 of your "Developer ID Application" cert
+#                              exported (with private key) as a .p12
+#                              (`base64 -i cert.p12 | pbcopy`)
+#   DEVELOPER_ID_P12_PASSWORD  password you set when exporting the .p12
+#   KEYCHAIN_PASSWORD          any throwaway password for the CI keychain
+#   AC_API_KEY_ID              App Store Connect API key id (for notarytool)
+#   AC_API_ISSUER              App Store Connect API issuer id
+#   AC_API_KEY_P8_BASE64       base64 of the App Store Connect API .p8 key
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # to create the release
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Build & sign
+        run: scripts/package_app.sh
+
+      - name: Notarize & staple
+        env:
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER: ${{ secrets.AC_API_ISSUER }}
+          AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          echo "$AC_API_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/ac.p8"
+          ditto -c -k --keepParent build/SDRGB.app build/SDRGB-notarize.zip
+          xcrun notarytool submit build/SDRGB-notarize.zip \
+            --key "$RUNNER_TEMP/ac.p8" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER" --wait
+          xcrun stapler staple build/SDRGB.app
+          rm -f "$RUNNER_TEMP/ac.p8" build/SDRGB-notarize.zip
+          ditto -c -k --keepParent build/SDRGB.app build/SDRGB.zip
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --prerelease \
+            --title "SDRGB ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            build/SDRGB.zip

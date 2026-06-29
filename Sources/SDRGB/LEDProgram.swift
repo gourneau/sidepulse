@@ -38,18 +38,18 @@ enum LEDProgram {
 
     // MARK: - Presets
 
-    struct Preset: Identifiable {
+    struct Preset: Identifiable, Sendable {
         let id: String
         let name: String
         let symbol: String
         /// Builds the program for a device's LED count, brightness, whether it's
         /// animated, and a 0…1 speed (only meaningful for animatable presets).
-        let make: (_ ledCount: Int, _ brightness: Int, _ animated: Bool, _ speed: Double) -> String
+        let make: @Sendable (_ ledCount: Int, _ brightness: Int, _ animated: Bool, _ speed: Double) -> String
         /// True if this preset has distinct animated and static forms (so the UI
         /// can show the Animated/Speed controls as meaningful for it).
         let animatable: Bool
         init(_ id: String, _ name: String, _ symbol: String, animatable: Bool = false,
-             _ make: @escaping (Int, Int, Bool, Double) -> String) {
+             _ make: @escaping @Sendable (Int, Int, Bool, Double) -> String) {
             self.id = id; self.name = name; self.symbol = symbol
             self.animatable = animatable; self.make = make
         }
@@ -175,6 +175,19 @@ enum LEDProgram {
         var cells = Array(repeating: "#000000", count: n)
         for i in 0..<lit { cells[i] = hex }
         return cells.joined(separator: " ")
+    }
+
+    /// Like `fullBar`, but the lit LEDs gently breathe (off → color → off) — used
+    /// for the battery metric while charging. Loops on-device.
+    static func pulseBar(hex: String, value: Double, ledCount: Int, durationMs: Int = 1600) -> String {
+        let n = max(1, ledCount)
+        let v = min(1, max(0, value))
+        var lit = Int((v * Double(n)).rounded())
+        if v > 0 { lit = max(1, lit) }
+        lit = min(lit, n)
+        guard lit > 0 else { return off() }
+        let segs = (0..<lit).map { "\($0):\(hex) \(durationMs)ms pulse" }
+        return "off\n" + segs.joined(separator: "; ") + "\nrepeat"
     }
 
     /// `#rrggbb` for an HSV color (hue/saturation/value in 0...1).

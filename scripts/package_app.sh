@@ -25,6 +25,14 @@ cp "$BIN/SDRGB" "$APP/Contents/MacOS/SDRGB"
 cp "$BIN/SDRGBHelper" "$APP/Contents/MacOS/SDRGBHelper"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
+# Stamp the version shown in the app (gear menu). release.sh passes APP_VERSION
+# from the release tag; default to a git describe so dev bundles aren't stale.
+APP_VERSION="${APP_VERSION:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)}"
+APP_VERSION="${APP_VERSION#v}"   # strip leading v from tags like v0.1.0-beta.3
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" \
+    "$APP/Contents/Info.plist" 2>/dev/null || true
+echo "==> version $APP_VERSION"
+
 # LaunchDaemon plist for SMAppService (runs the helper as root, on demand).
 cat > "$APP/Contents/Library/LaunchDaemons/$HELPER_LABEL.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

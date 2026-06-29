@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import IOKit.ps
 
 /// A mounted sdstatusbar device (one volume).
 struct Device: Identifiable, Equatable, Sendable {
@@ -10,9 +11,21 @@ struct Device: Identifiable, Equatable, Sendable {
     var id: String { volumeURL.path }
     var ledsURL: URL { volumeURL.appendingPathComponent("LEDS.TXT") }
     var statusURL: URL { volumeURL.appendingPathComponent("STATUS.TXT") }
+    var keepAliveURL: URL { volumeURL.appendingPathComponent("KEEPALIVE.TXT") }
 
     static func == (a: Device, b: Device) -> Bool { a.volumeURL == b.volumeURL }
 }
+
+/// A timestamped entry for the 24h activity log (heart = keepalive, dot = events).
+struct ActivityEvent: Identifiable, Sendable {
+    let id = UUID()
+    let date: Date
+    let kind: Kind
+    let text: String
+    enum Kind: Sendable { case keepalive, update, error, warning, repair }
+}
+
+enum ActivityFilter: Sendable { case all, keepalive, events }
 
 /// Outcome of an isolated I/O operation.
 enum IOResult: Sendable { case ok, failed, stuck }
@@ -40,7 +53,7 @@ struct Metric: Identifiable {
 @MainActor
 final class DeviceManager: ObservableObject {
     /// How often we touch the heartbeat file. The whole point of the app.
-    static let heartbeatInterval: TimeInterval = 120
+    static let heartbeatInterval: TimeInterval = 60
 
     /// Known volume name → LED count. Unknown matching volumes default to 2.
     /// `SidePulse` is the 8-LED strip; `PulseDot` is the 2-LED dot.
@@ -56,8 +69,28 @@ final class DeviceManager: ObservableObject {
     /// The program currently on the selected device's LEDS.TXT (read on demand).
     @Published private(set) var currentProgram: String?
 
+    /// Rolling 24h activity log (heart popup = keepalive, dot popup = events).
+    @Published private(set) var events: [ActivityEvent] = []
+    /// Which slice the Activity window shows (set when heart/dot is clicked).
+    @Published var activityFilter: ActivityFilter = .all
+    /// The last LED program actually written, for self-heal after a device reset.
+    private var lastWrittenLEDS: String?
+    /// Whether a device has been seen this run (gates auto-repair so a device-less
+    /// Mac never fires the privileged repair).
+    private var everHadDevice = false
+
     private func setStatus(_ level: AppStatus.Level, _ text: String) {
         status = AppStatus(level: level, text: text, date: Date())
+        let kind: ActivityEvent.Kind = level == .error ? .error
+            : (level == .warning ? .warning : .update)
+        log(kind, text)
+    }
+
+    private func log(_ kind: ActivityEvent.Kind, _ text: String) {
+        events.append(ActivityEvent(date: Date(), kind: kind, text: text))
+        let cutoff = Date().addingTimeInterval(-24 * 3600)
+        events.removeAll { $0.date < cutoff }
+        if events.count > 3000 { events.removeFirst(events.count - 3000) }
     }
 
     private var heartbeatTimer: Timer?
@@ -70,9 +103,10 @@ final class DeviceManager: ObservableObject {
     /// off the main thread. The actual device I/O happens inside that child, not
     /// here — so a wedge can never block this queue for more than `ioTimeout`.
     private let ioQueue = DispatchQueue(label: "com.gourneau.SDRGB.io", qos: .utility)
-    /// `.leds` = a manual program (shows success); `.info` = an Info-mode frame
-    /// (silent on success, so cycling doesn't spam); `.keepalive` = a read.
-    private enum WriteKind { case leds, info, keepalive }
+    /// `.leds` = a discrete manual program (flashes the status dot); `.liveLeds`
+    /// = a live slider write (quiet, so dragging doesn't strobe); `.info` = an
+    /// Info-mode frame (silent); `.keepalive` = a read.
+    private enum WriteKind { case leds, liveLeds, info, keepalive }
 
     /// True while a write/read to that device is outstanding (UI "Writing…").
     func isWriting(_ device: Device?) -> Bool {
@@ -119,6 +153,44 @@ final class DeviceManager: ObservableObject {
     /// Which enabled metric is currently shown (advances each sample tick).
     private var cycleIndex = 0
     @Published private(set) var displayedMetricID: String?
+    /// Whether the Mac is currently charging (for the battery breathing effect).
+    @Published private(set) var batteryCharging = false
+    /// Battery breathes while charging (toggle), and how fast (0…1).
+    @Published var batteryBreatheWhenCharging = true {
+        didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
+    }
+    /// 0 = slowest. Defaults low for a calm, slow breath.
+    @Published var batteryBreatheSpeed = 0.2 {
+        didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
+    }
+    /// Current charge power in watts (for display in the app only).
+    @Published private(set) var batteryWatts: Double?
+    /// Output brightness for Info mode (0…255).
+    @Published var infoBrightness = 255 {
+        didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
+    }
+
+    /// Last manual program (color/preset/raw), restored after wake when
+    /// "turn LEDs off when the Mac sleeps" is on.
+    private var lastUserProgram: String?
+    /// When true, switch the LEDs off as the Mac sleeps and restore on wake.
+    @Published var ledsOffOnSleep = true
+    /// When true, switch the LEDs off as the app quits (no restore — it's gone).
+    @Published var ledsOffOnQuit = false
+    /// Auto-try the repair once, ~30s after the device looks wedged/disconnected.
+    @Published var autoRepair = true
+    private var autoRepairTimer: Timer?
+    /// True when a `com.apple.fskit.msdos` process is detected pegged at ~100% CPU
+    /// (the hung-FAT-driver state) — the UI offers a one-click Repair.
+    @Published private(set) var hungDriverDetected = false
+    /// True when the SD reader has our card's block-storage device but it never
+    /// became a mounted volume — the "ghost card" state seen when the device
+    /// resets/crashes without re-presenting a disk.
+    @Published private(set) var deviceGhosted = false
+    /// The precise (and worst) sub-state: the reader latched the card as
+    /// `Ejected = Yes` while it's still physically present. No userspace API can
+    /// un-eject it — only a sleep/wake re-probe or a physical re-seat recovers it.
+    @Published private(set) var ghostEjected = false
 
     /// Available metrics. Battery = white, CPU = blue, Memory = green.
     private(set) lazy var metrics: [Metric] = [
@@ -145,11 +217,57 @@ final class DeviceManager: ObservableObject {
                        name: NSWorkspace.didUnmountNotification, object: nil)
         nc.addObserver(self, selector: #selector(didWake),
                        name: NSWorkspace.didWakeNotification, object: nil)
+        nc.addObserver(self, selector: #selector(willSleep),
+                       name: NSWorkspace.willSleepNotification, object: nil)
+        // App quit: optionally switch the LEDs off before we exit.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appWillTerminate),
+            name: NSApplication.willTerminateNotification, object: nil)
         startHeartbeat()
         startTick()
         startMetrics()
+        setupPowerNotification()
         // Detect connected devices (off-thread); the scan handler beats them.
         rescan()
+        // On launch, see if the FAT driver is already wedged (stalls Finder too),
+        // or the card is ghosting (present in the reader but never mounted).
+        checkHungDriver()
+        checkDeviceHealth()
+    }
+
+    // MARK: - Power source (charging) — updates immediately on plug/unplug
+
+    private var powerSource: CFRunLoopSource?
+
+    private var chargingTimer: Timer?
+
+    private func setupPowerNotification() {
+        powerSourceChanged()   // initial
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        if let src = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            let mgr = Unmanaged<DeviceManager>.fromOpaque(context).takeUnretainedValue()
+            Task { @MainActor in mgr.powerSourceChanged() }
+        }, ctx)?.takeRetainedValue() {
+            CFRunLoopAddSource(CFRunLoopGetMain(), src, .defaultMode)
+            powerSource = src
+        }
+        // Backstop poll (power notifications can lag): react within ~3s. Cheap —
+        // just a power read, no device I/O.
+        let t = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.powerSourceChanged() }
+        }
+        t.tolerance = 1
+        RunLoop.main.add(t, forMode: .common)
+        chargingTimer = t
+    }
+
+    private func powerSourceChanged() {
+        let info = BatteryReader.current()
+        let changed = info.charging != batteryCharging
+        batteryCharging = info.charging
+        batteryWatts = info.charging ? sysMetrics.chargingWatts() : nil
+        if changed && infoActive { showInfoFrame(advance: false, force: true) }
     }
 
     // MARK: - Detection
@@ -166,35 +284,76 @@ final class DeviceManager: ObservableObject {
         // Resume cadence promptly after sleep.
         startHeartbeat()
         rescan()
+        beat()
+        checkHungDriver()
+        checkDeviceHealth()
+        // Re-apply the last LED program — the device often resets across sleep,
+        // wiping its program. Give the volume a moment to remount first.
+        if let program = lastWrittenLEDS {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self else { return }
+                self.lastInfoProgram = nil
+                _ = self.deliver(program, kind: .info)
+            }
+        }
+    }
+
+    @objc private func willSleep() {
+        // Optionally switch the LEDs off as the Mac sleeps (restored on wake).
+        guard ledsOffOnSleep, let device = selectedDevice else { return }
+        let url = device.ledsURL
+        enqueueIO(kind: .info, volume: device.volumeURL.path) {
+            DeviceManager.performWrite(LEDProgram.off() + "\n", to: url)
+        }
+    }
+
+    @objc private func appWillTerminate() {
+        // The app is exiting, so the async I/O queue won't run — write off
+        // synchronously instead. performWrite is bounded by its own timeout, and
+        // every connected device gets switched off (skipping any that's wedged).
+        guard ledsOffOnQuit else { return }
+        let off = LEDProgram.off() + "\n"
+        for device in devices where !stuckVolumes.contains(device.volumeURL.path) {
+            _ = DeviceManager.performWrite(off, to: device.ledsURL)
+        }
     }
 
     /// Scan every mounted volume for an sdstatusbar device. Runs the (potentially
     /// blocking) filesystem work off the main thread, then applies on main.
     func rescan() {
         ioQueue.async { [weak self] in
-            let found = DeviceManager.scanVolumes()
-            Task { @MainActor in self?.applyScan(found) }
+            // Verify marker files (bounded, isolated) on the background queue, so a
+            // user volume that merely shares the name SDRGB/USBDOT isn't mistaken
+            // for a device (and scribbled with LEDS.TXT).
+            let found = DeviceManager.scanVolumes(verify: true)
+            Task { @MainActor [weak self] in self?.applyScan(found) }
         }
     }
 
     /// The blocking part of detection — safe to run on a background thread even
-    /// if a stale mount hangs on it.
-    nonisolated static func scanVolumes() -> [Device] {
+    /// if a stale mount hangs on it. When `verify` is true, each name-matched
+    /// volume must actually contain LEDS.TXT + STATUS.TXT (checked via a bounded
+    /// isolated child, so a wedged FAT mount can't hang us); when false it matches
+    /// by mount name only (fast, main-thread-safe — used as a last-ditch re-check).
+    nonisolated static func scanVolumes(verify: Bool = false) -> [Device] {
         let fm = FileManager.default
         let vols = (try? fm.contentsOfDirectory(
             at: URL(fileURLWithPath: "/Volumes"),
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles])) ?? []
 
+        // Match by mount name first — never stat INTO the volume directly, which
+        // can hang if its (emulated) FAT driver is wedged. Listing /Volumes is safe.
         var found: [Device] = []
         for vol in vols {
-            let leds = vol.appendingPathComponent("LEDS.TXT")
-            let status = vol.appendingPathComponent("STATUS.TXT")
-            // A device exposes LEDS.TXT alongside the firmware's STATUS.TXT.
-            guard fm.fileExists(atPath: leds.path),
-                  fm.fileExists(atPath: status.path) else { continue }
             let name = vol.lastPathComponent
-            let count = knownLEDCounts[name] ?? 2
+            guard let count = knownLEDCounts[name] else { continue }
+            if verify {
+                let leds = vol.appendingPathComponent("LEDS.TXT").path
+                let status = vol.appendingPathComponent("STATUS.TXT").path
+                guard runIsolated(#"test -f "$1" && test -f "$2""#,
+                                  [leds, status], timeout: ioTimeout) == .ok else { continue }
+            }
             found.append(Device(volumeURL: vol, name: name, ledCount: count))
         }
         return found.sorted { $0.name < $1.name }
@@ -203,6 +362,7 @@ final class DeviceManager: ObservableObject {
     private func applyScan(_ found: [Device]) {
         let changed = found != devices
         devices = found
+        if !found.isEmpty { everHadDevice = true }
         // Keep selection valid, preferring the 8-LED device by default.
         if selectedID == nil || !found.contains(where: { $0.id == selectedID }) {
             selectedID = found.max(by: { $0.ledCount < $1.ledCount })?.id
@@ -210,6 +370,9 @@ final class DeviceManager: ObservableObject {
         // Keep newly connected devices alive right away and refresh Info mode.
         if changed { beat() }
         if infoActive { showInfoFrame(advance: false, force: true) }
+        if found.isEmpty { checkDeviceHealth() }   // is the card ghosting?
+        else if deviceGhosted || ghostEjected { deviceGhosted = false; ghostEjected = false }
+        evaluateAutoRepair()
     }
 
     // MARK: - Writing LED programs
@@ -222,16 +385,70 @@ final class DeviceManager: ObservableObject {
             setStatus(.error, validation.message ?? "Invalid program.")
             return validation
         }
+        // Don't give up on stale state: re-check /Volumes (just a name match, no
+        // device I/O) before declaring "no device" — the volume may have just
+        // (re)mounted. Update selection in place only; calling the full applyScan
+        // here would re-enter beat()/showInfoFrame() mid-deliver. A background
+        // rescan (with marker verification) corrects anything this adopts.
+        if selectedDevice == nil {
+            let found = DeviceManager.scanVolumes()
+            if found != devices {
+                devices = found
+                if selectedID == nil || !found.contains(where: { $0.id == selectedID }) {
+                    selectedID = found.max(by: { $0.ledCount < $1.ledCount })?.id
+                }
+                rescan()   // async, verifies marker files and fixes side effects
+            }
+        }
         guard let device = selectedDevice else {
+<<<<<<< rainbow-smoothness-and-device-rename
             setStatus(.error, "No device connected — plug in SidePulse or PulseDot.")
+=======
+            setStatus(.error, "No device connected.")
+>>>>>>> main
             return validation
         }
+        if kind == .leds || kind == .liveLeds { lastUserProgram = program }   // restore-after-sleep
+        lastWrittenLEDS = program   // for self-heal after a device reset
         let ledsURL = device.ledsURL
         let text = program + "\n"
         enqueueIO(kind: kind, volume: device.volumeURL.path) {
             DeviceManager.performWrite(text, to: ledsURL)
         }
         return validation
+    }
+
+    /// After a keepalive: if the device reset itself (LEDS.TXT reverted to its
+    /// default comment-only file), re-apply the last program so the LEDs return
+    /// without user action. Reads are gentle; only re-writes when actually reset.
+    private func healIfReset() {
+        guard let device = selectedDevice, let intended = lastWrittenLEDS,
+              !stuckVolumes.contains(device.volumeURL.path),
+              !inFlightVolumes.contains(device.volumeURL.path) else { return }
+        let url = device.ledsURL
+        let vol = device.volumeURL.path
+        inFlightVolumes.insert(vol)
+        ioQueue.async { [weak self] in
+            let (result, text) = DeviceManager.readContents(url)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.inFlightVolumes.remove(vol)
+                guard result == .ok, let text else {
+                    if result == .stuck { self.stuckVolumes.insert(vol) }
+                    return
+                }
+                // Reset signature: reverted to the firmware default comment file,
+                // and no longer contains the program we wrote.
+                let firstLine = intended.split(separator: "\n").first.map(String.init) ?? intended
+                let looksReset = !text.contains(firstLine)
+                    && (text.contains("# sdled") || text.lowercased().contains("commands:"))
+                if looksReset {
+                    self.log(.repair, "Device reset — re-applying LEDs")
+                    self.lastInfoProgram = nil          // bypass info dedup
+                    _ = self.deliver(intended, kind: .info)  // silent re-apply
+                }
+            }
+        }
     }
 
     /// A manual program (color/preset/raw). Takes over from Info mode and writes
@@ -251,11 +468,15 @@ final class DeviceManager: ObservableObject {
         let validation = LEDProgram.validate(program)
         guard validation.isValid else { setStatus(.error, validation.message ?? "Invalid program."); return }
         guard selectedDevice != nil else {
+<<<<<<< rainbow-smoothness-and-device-rename
             setStatus(.error, "No device connected — plug in SidePulse or PulseDot."); return
+=======
+            setStatus(.error, "No device connected."); return
+>>>>>>> main
         }
         pendingWrite?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            Task { @MainActor in _ = self?.deliver(program) }
+            Task { @MainActor [weak self] in _ = self?.deliver(program, kind: .liveLeds) }
         }
         pendingWrite = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
@@ -286,7 +507,7 @@ final class DeviceManager: ObservableObject {
     private func startMetrics() {
         sampleMetrics()
         let t = Timer(timeInterval: cycleInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.sampleMetrics()
                 self?.showInfoFrame(advance: true)
             }
@@ -302,6 +523,9 @@ final class DeviceManager: ObservableObject {
         var values: [String: Double] = [:]
         for metric in metrics { values[metric.id] = metric.read() }
         metricValues = values
+        let info = BatteryReader.current()
+        batteryCharging = info.charging
+        batteryWatts = info.charging ? sysMetrics.chargingWatts() : nil
     }
 
     /// Show the current metric across the whole strip, cycling to the next one
@@ -314,10 +538,18 @@ final class DeviceManager: ObservableObject {
         if advance { cycleIndex += 1 }
         let id = enabledMetrics[cycleIndex % count]
         displayedMetricID = id
-        guard let metric = metrics.first(where: { $0.id == id }) else { return }
-        let program = LEDProgram.fullBar(hex: metric.hex,
-                                         value: metricValues[id] ?? 0,
-                                         ledCount: device.ledCount)
+        guard metrics.contains(where: { $0.id == id }) else { return }
+        let value = metricValues[id] ?? 0
+        let hex = effectiveHex(id)
+        var program: String
+        if id == "battery" && batteryCharging && batteryBreatheWhenCharging {
+            // Gentle breathing while charging, at the chosen speed.
+            let dur = LEDProgram.frameMs(batteryBreatheSpeed, slow: 4000, fast: 800)
+            program = LEDProgram.pulseBar(hex: hex, value: value, ledCount: device.ledCount, durationMs: dur)
+        } else {
+            program = LEDProgram.fullBar(hex: hex, value: value, ledCount: device.ledCount)
+        }
+        program = LEDProgram.withBrightness(program, infoBrightness)
         if !force && program == lastInfoProgram { return }
         lastInfoProgram = program
         deliver(program, kind: .info)
@@ -328,7 +560,7 @@ final class DeviceManager: ObservableObject {
     private func startHeartbeat() {
         heartbeatTimer?.invalidate()
         let t = Timer(timeInterval: Self.heartbeatInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.beat() }
+            Task { @MainActor [weak self] in self?.beat() }
         }
         t.tolerance = 5
         RunLoop.main.add(t, forMode: .common)
@@ -338,25 +570,29 @@ final class DeviceManager: ObservableObject {
 
     private func startTick() {
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.now = Date() }
+            Task { @MainActor [weak self] in self?.now = Date() }
         }
         t.tolerance = 0.5
         RunLoop.main.add(t, forMode: .common)
         tickTimer = t
     }
 
-    /// Keep every connected device alive with a gentle **read** of STATUS.TXT
-    /// (rather than a write). Any host I/O keeps the USB/SD link active, and a
-    /// read is far less likely to wedge the device's tiny mass-storage firmware
-    /// than a write — and it never disturbs the running LED animation.
+    /// Keep every connected device alive by **writing** a timestamp to
+    /// KEEPALIVE.TXT (a dedicated file the firmware never parses, so the LED
+    /// animation isn't disturbed). A write is more "activity" than a read; runs
+    /// every 60s. On success it triggers a self-heal check (re-apply the LED
+    /// program if the device reset and reverted LEDS.TXT to default).
     func beat() {
+        let stamp = ISO8601DateFormatter().string(from: Date())
         for device in devices {
+            let url = device.keepAliveURL
             enqueueIO(kind: .keepalive, volume: device.volumeURL.path) {
-                DeviceManager.performRead(device.statusURL)
+                DeviceManager.performWrite("sdrgb keepalive \(stamp)\n", to: url)
             }
         }
-        // lastHeartbeat / lastHeartbeatOK are set when a read actually succeeds.
         nextHeartbeat = Date().addingTimeInterval(Self.heartbeatInterval)
+        checkHungDriver()      // catch a mid-session FAT-driver wedge (~every 60s)
+        checkDeviceHealth()    // catch the "ghost card" state (no-op when mounted)
     }
 
     /// Force an immediate heartbeat (used by the "Beat now" button).
@@ -377,39 +613,56 @@ final class DeviceManager: ObservableObject {
         inFlightVolumes.insert(volume)
         ioQueue.async { [weak self] in
             let result = op()
-            Task { @MainActor in self?.finishIO(kind: kind, volume: volume, result: result) }
+            Task { @MainActor [weak self] in self?.finishIO(kind: kind, volume: volume, result: result) }
         }
     }
 
     private func finishIO(kind: WriteKind, volume: String, result: IOResult) {
         inFlightVolumes.remove(volume)
-        let name = deviceName(forVolume: volume)
         switch result {
         case .stuck:
             stuckVolumes.insert(volume)
-            setStatus(.warning, "\(name) stopped responding — I/O paused. Unplug and replug to recover.")
+            setStatus(.warning, "Device stopped responding — use Repair to recover.")
+            evaluateAutoRepair()
         case .failed:
             switch kind {
-            case .leds, .info:
-                setStatus(.error, "Couldn’t write to \(name) — it may have been unplugged or full. Reconnect and try again.")
+            case .leds, .liveLeds, .info:
+                setStatus(.error, "Couldn’t write — the device may be unplugged or full.")
             case .keepalive:
                 lastHeartbeatOK = false
             }
         case .ok:
             switch kind {
             case .leds:
-                setStatus(.success, "Updated \(name).")
-            case .info:
-                // Cycling shouldn't spam success; clear any stale error/warning.
+                setStatus(.success, "Updated")
+            case .liveLeds, .info:
+                // Live/cycling writes stay quiet; clear any stale error/warning.
                 if let level = status?.level, level == .error || level == .warning { status = nil }
             case .keepalive:
                 lastHeartbeat = Date(); lastHeartbeatOK = true
+                log(.keepalive, "Kept alive")
+                healIfReset()   // volume slot is now free
             }
         }
     }
 
-    private func deviceName(forVolume volume: String) -> String {
-        devices.first { $0.volumeURL.path == volume }?.name ?? "the device"
+    // MARK: - Customizable metric colors
+
+    /// User overrides for metric colors (defaults live on each `Metric`).
+    @Published var metricColors: [String: Color] = [:]
+
+    func effectiveColor(_ id: String) -> Color {
+        metricColors[id] ?? metrics.first { $0.id == id }?.color ?? .white
+    }
+
+    func effectiveHex(_ id: String) -> String {
+        if let c = metricColors[id] { return LEDProgram.hex(c) }
+        return metrics.first { $0.id == id }?.hex ?? "#ffffff"
+    }
+
+    func setMetricColor(_ id: String, _ color: Color) {
+        metricColors[id] = color
+        if infoActive { showInfoFrame(advance: false, force: true) }
     }
 
     // MARK: - Reading the live program
@@ -419,17 +672,20 @@ final class DeviceManager: ObservableObject {
     func loadCurrentProgram() {
         guard let device = selectedDevice else {
             currentProgram = nil
+<<<<<<< rainbow-smoothness-and-device-rename
             setStatus(.error, "No device connected — plug in SidePulse or PulseDot.")
+=======
+            setStatus(.error, "No device connected.")
+>>>>>>> main
             return
         }
         let vol = device.volumeURL.path
         guard !stuckVolumes.contains(vol), !inFlightVolumes.contains(vol) else { return }
         let url = device.ledsURL
-        let name = device.name
         inFlightVolumes.insert(vol)
         ioQueue.async { [weak self] in
             let (result, text) = DeviceManager.readContents(url)
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.inFlightVolumes.remove(vol)
                 switch result {
@@ -437,12 +693,146 @@ final class DeviceManager: ObservableObject {
                     self.currentProgram = text ?? ""
                 case .stuck:
                     self.stuckVolumes.insert(vol)
-                    self.setStatus(.warning, "\(name) stopped responding — I/O paused. Unplug and replug to recover.")
+                    self.setStatus(.warning, "Device stopped responding — I/O paused. Reconnect it to recover.")
                 case .failed:
-                    self.setStatus(.error, "Couldn’t read \(name). Is it still mounted?")
+                    self.setStatus(.error, "Couldn’t read the device. Is it still mounted?")
                 }
             }
         }
+    }
+
+    // MARK: - Reconnect / repair a stuck volume
+
+    /// A device must have been seen this run before we'll auto-repair — so a
+    /// device-less Mac never fires the privileged repair (which kills the FAT
+    /// driver). Stuck always qualifies.
+    private func needsRepair() -> Bool {
+        anyDeviceStuck || deviceGhosted || (everHadDevice && devices.isEmpty)
+    }
+
+    /// Arm/cancel auto-repair based on device health.
+    private func evaluateAutoRepair() {
+        if needsRepair() { armAutoRepair(after: 30) }
+        else { autoRepairTimer?.invalidate(); autoRepairTimer = nil }
+    }
+
+    private func armAutoRepair(after seconds: TimeInterval) {
+        guard autoRepair, autoRepairTimer == nil else { return }
+        let t = Timer(timeInterval: seconds, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.fireAutoRepair() }
+        }
+        t.tolerance = 5
+        RunLoop.main.add(t, forMode: .common)
+        autoRepairTimer = t
+    }
+
+    private func fireAutoRepair() {
+        autoRepairTimer = nil
+        guard autoRepair, needsRepair() else { return }
+        setStatus(.info, "Auto-repairing the device…")
+        WakeGuard.shared.autoRepairIfPossible { [weak self] in self?.afterRepair() }
+        // Keep retrying on a cooldown while still wedged (cancelled once healthy).
+        armAutoRepair(after: 120)
+    }
+
+    /// Called after WakeGuard's privileged repair finishes: re-detect and report.
+    func afterRepair() {
+        stuckVolumes.removeAll()
+        inFlightVolumes.removeAll()
+        hungDriverDetected = false
+        deviceGhosted = false
+        ghostEjected = false
+        rescan()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [weak self] in
+            guard let self else { return }
+            self.checkHungDriver()   // confirm the driver is no longer pegged
+            if self.devices.isEmpty {
+                self.setStatus(.warning, "Couldn’t reconnect — try Repair again; reboot as a last resort.")
+            } else {
+                self.setStatus(.success, "Reconnected")
+            }
+        }
+    }
+
+    /// Detect a hung FAT driver (also what stalls Finder) via a cheap `ps` — never
+    /// touches the device, so it's safe even while everything else is wedged.
+    func checkHungDriver() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let hung = DeviceManager.isFskitHung()
+            Task { @MainActor [weak self] in self?.hungDriverDetected = hung }
+        }
+    }
+
+    /// Watchdog for the "ghost card" state: the SD reader sees our card but it
+    /// never mounted as a volume (a device crash/reset that didn't re-enumerate a
+    /// disk). Only meaningful when we have no mounted device, so it's skipped
+    /// otherwise. Never touches the volume — reads the card reader via
+    /// `system_profiler` in a bounded child. Triggers auto-repair when found.
+    func checkDeviceHealth() {
+        guard devices.isEmpty else {
+            if deviceGhosted || ghostEjected { deviceGhosted = false; ghostEjected = false }
+            return
+        }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let probe = DeviceManager.probeSDXC()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let ghosted = probe.present && self.devices.isEmpty
+                if ghosted != self.deviceGhosted {
+                    self.deviceGhosted = ghosted
+                    if ghosted {
+                        self.log(.warning, probe.ejected
+                            ? "Card stuck half-ejected (hardware) — re-seat or sleep/wake needed"
+                            : "Card detected but not mounted")
+                    }
+                }
+                self.ghostEjected = ghosted && probe.ejected
+                if ghosted { self.everHadDevice = true; self.evaluateAutoRepair() }
+            }
+        }
+    }
+
+    /// Probe the SD reader via `ioreg` (bounded child — never the volume). Returns
+    /// whether our card's block-storage device exists at all, and whether it's
+    /// stuck `Ejected = Yes` (present but un-publishable, the unrecoverable-by-
+    /// software state). `AppleSDXCBlockStorageDevice` only exists when a card is/
+    /// was inserted, so its presence + no mounted volume == the ghost-card state.
+    nonisolated static func probeSDXC() -> (present: Bool, ejected: Bool) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
+        p.arguments = ["-r", "-c", "AppleSDXCBlockStorageDevice", "-l", "-w0"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in done.signal() }
+        do { try p.run() } catch { return (false, false) }
+        if done.wait(timeout: .now() + 6) == .timedOut { p.terminate(); return (false, false) }
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard out.contains("AppleSDXCBlockStorageDevice") else { return (false, false) }
+        return (true, out.contains("\"Ejected\" = Yes"))
+    }
+
+    nonisolated static func isFskitHung() -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/ps")
+        p.arguments = ["-axo", "%cpu=,command="]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in done.signal() }
+        do { try p.run() } catch { return false }
+        if done.wait(timeout: .now() + 4) == .timedOut { p.terminate(); return false }
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        for raw in out.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard let sp = line.firstIndex(of: " ") else { continue }
+            let cpu = Double(line[..<sp]) ?? 0
+            let cmd = line[line.index(after: sp)...]
+            if cmd.contains("com.apple.fskit.msdos") && cpu > 50 { return true }
+        }
+        return false
     }
 
     /// Write `text` to `url` via an isolated child: stage on local disk first

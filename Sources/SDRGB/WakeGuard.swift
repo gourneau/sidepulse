@@ -15,10 +15,21 @@ import SDRGBShared
 ///   passwordless `sudo` rule.
 @MainActor
 final class WakeGuard: ObservableObject {
+    /// Shared instance so the always-alive DeviceManager can trigger auto-repair.
+    static let shared = WakeGuard()
+
     @Published var keepAwake = false {
-        didSet { keepAwake ? createAssertion() : releaseAssertion() }
+        didSet { keepAwake ? createAssertion() : releaseAssertion(); updateAwakeSince() }
     }
-    @Published private(set) var lidClosed = false
+    @Published private(set) var lidClosed = false { didSet { updateAwakeSince() } }
+    /// When keep-awake (either kind) became active — for the "awake for …" display.
+    @Published private(set) var awakeSince: Date?
+
+    private func updateAwakeSince() {
+        let active = keepAwake || lidClosed
+        if active, awakeSince == nil { awakeSince = Date() }
+        else if !active { awakeSince = nil }
+    }
     @Published private(set) var lidClosedBusy = false
     @Published private(set) var lidClosedError: String?
 
@@ -84,7 +95,7 @@ final class WakeGuard: ObservableObject {
         if connection == nil {
             let c = NSXPCConnection(machServiceName: HelperConstants.machServiceName, options: .privileged)
             c.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
-            c.invalidationHandler = { [weak self] in Task { @MainActor in self?.connection = nil } }
+            c.invalidationHandler = { [weak self] in Task { @MainActor [weak self] in self?.connection = nil } }
             c.resume()
             connection = c
         }
@@ -93,7 +104,7 @@ final class WakeGuard: ObservableObject {
 
     private func callHelper(_ enabled: Bool) {
         let proxy = helperProxy { [weak self] in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.lidClosedBusy = false
                 self?.lidClosedError = "Couldn't reach the privileged helper."
             }
@@ -113,11 +124,92 @@ final class WakeGuard: ObservableObject {
         }
     }
 
+    // MARK: - Repair (passwordless via the helper, like lid-closed)
+
+    @Published private(set) var repairBusy = false
+
+    /// Recover a wedged device without a reboot. Passwordless through the helper
+    /// (root) after the one-time approval; unsigned dev builds use a one-off
+    /// admin prompt. Never blocks the UI: a 30 s timeout always finishes it.
+    func repair(_ completion: @escaping @MainActor () -> Void) {
+        guard !repairBusy else { return }
+        repairBusy = true
+
+        let status = ensureHelperRegistered()
+        if status == .requiresApproval {
+            repairBusy = false
+            lidClosedError = "Approve “SDRGB” in System Settings → Login Items, then repair again."
+            SMAppService.openSystemSettingsLoginItems()
+            completion()
+            return
+        }
+        if status == .enabled,
+           let proxy = helperProxy({ [weak self] in
+               Task { @MainActor [weak self] in self?.finishRepair(completion) }
+           }) {
+            proxy.repair { _ in Task { @MainActor in self.finishRepair(completion) } }
+            // UI-safety: finish even if the helper/device hangs.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                self?.finishRepair(completion)
+            }
+            return
+        }
+        // Unsigned/dev build: one-off admin repair.
+        DispatchQueue.global(qos: .userInitiated).async {
+            WakeGuard.repairViaAdmin()
+            Task { @MainActor in self.finishRepair(completion) }
+        }
+    }
+
+    private func finishRepair(_ completion: @escaping @MainActor () -> Void) {
+        guard repairBusy else { return }   // run once (reply OR timeout OR error)
+        repairBusy = false
+        completion()
+    }
+
+    /// Auto-repair: only proceeds if it can run **silently** (helper already
+    /// approved) — never prompts while the user is away.
+    func autoRepairIfPossible(_ completion: @escaping @MainActor () -> Void) {
+        guard !repairBusy, helperService.status == .enabled else { completion(); return }
+        repair(completion)
+    }
+
+    nonisolated private static func repairViaAdmin() {
+        let script = """
+        /usr/bin/pkill -9 -f 'com.apple.fskit.msdos' 2>/dev/null || true
+        /usr/bin/pkill -9 -f 'libexec/fskit_agent' 2>/dev/null || true
+        /usr/bin/pkill -9 -f 'libexec/fskit_helper' 2>/dev/null || true
+        sleep 1
+        for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null || true; done
+        sleep 2
+        for i in 1 2 3 4 5; do
+          ok=0
+          for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null && ok=1 || true; done
+          [ "$ok" = 1 ] && break
+          sleep 1
+        done
+        exit 0
+        """
+        let tmp = NSTemporaryDirectory() + "sdrgb-repair-\(UUID().uuidString).sh"
+        guard (try? script.write(toFile: tmp, atomically: true, encoding: .utf8)) != nil else { return }
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+        let osa = "do shell script \"/bin/sh '\(tmp)'\" with administrator privileges"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", osa]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in done.signal() }
+        do { try p.run() } catch { return }
+        if done.wait(timeout: .now() + 120) == .timedOut { p.terminate() }
+    }
+
     // MARK: - Sudo fallback (unsigned dev builds only)
 
     private func sudoFallback(_ enabled: Bool) {
         let value = enabled ? "1" : "0"
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var message: String?
             var ok = (WakeGuard.runSudo(value) == .ok)
             if !ok {
@@ -132,10 +224,11 @@ final class WakeGuard: ObservableObject {
                 }
             }
             let actual = WakeGuard.readSleepDisabled()
-            Task { @MainActor in
-                self.lidClosedBusy = false
-                self.lidClosed = actual
-                self.lidClosedError = message
+            let finalMessage = message
+            Task { @MainActor [weak self] in
+                self?.lidClosedBusy = false
+                self?.lidClosed = actual
+                self?.lidClosedError = finalMessage
             }
         }
     }

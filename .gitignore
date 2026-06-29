@@ -12,3 +12,10 @@ build/
 # Editor
 *.xcuserstate
 .vscode/
+
+# secrets (never commit)
+*.p12
+*.p8
+AuthKey_*
+.env
+*.swp

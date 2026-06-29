@@ -4,9 +4,13 @@ import AppKit
 @main
 struct SDRGBApp: App {
     @StateObject private var device = DeviceManager()
-    @StateObject private var wake = WakeGuard()
+    @StateObject private var wake = WakeGuard.shared
 
     init() {
+        // Make this app's native tooltips (.help) pop almost instantly instead of
+        // the ~1.5s system default. Per-app only (our UserDefaults domain).
+        UserDefaults.standard.set(80, forKey: "NSInitialToolTipDelay")
+
         // Safe maintenance flag: remove the login item and quit WITHOUT starting
         // the app or touching any device volume. Runs before the DeviceManager
         // (@StateObject) is ever created.
@@ -32,7 +36,7 @@ struct SDRGBApp: App {
                 .environmentObject(device)
                 .environmentObject(wake)
         } label: {
-            Image(systemName: device.devices.isEmpty ? "lightbulb.slash" : "lightbulb.fill")
+            Image(systemName: menuBarIcon)
         }
         .menuBarExtraStyle(.window)
 
@@ -40,5 +44,16 @@ struct SDRGBApp: App {
             SpecView()
         }
         .windowResizability(.contentSize)
+
+        Window("SDRGB Activity", id: "activity") {
+            ActivityView().environmentObject(device)
+        }
+        .windowResizability(.contentSize)
+    }
+
+    /// Cup when keeping the Mac awake; otherwise the lightbulb (slash if no device).
+    private var menuBarIcon: String {
+        if wake.keepAwake || wake.lidClosed { return "cup.and.saucer.fill" }
+        return device.devices.isEmpty ? "lightbulb.slash" : "lightbulb.fill"
     }
 }
