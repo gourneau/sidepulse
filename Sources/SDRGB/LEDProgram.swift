@@ -72,6 +72,17 @@ enum LEDProgram {
         Preset("off", "Off", "power") { _, _, _, _ in off() }
     ]
 
+    /// Shortest exact duration token for a step duration. Decimal seconds (e.g.
+    /// `0.9s`) are documented and a char shorter than `900ms`; we snap to the
+    /// nearest 100 ms so the seconds form is exact, which lets one more rotation
+    /// frame fit the 512-byte budget on an 8-LED strip. Sub-100 ms stays in `ms`.
+    static func compactDur(_ ms: Int) -> String {
+        guard ms >= 100 else { return "\(ms)ms" }
+        let snapped = ((ms + 50) / 100) * 100
+        let whole = snapped / 1000, frac = (snapped % 1000) / 100
+        return frac == 0 ? "\(whole)s" : "\(whole).\(frac)s"
+    }
+
     /// Map a 0…1 speed to a millisecond duration (faster speed → shorter).
     static func frameMs(_ speed: Double, slow: Int, fast: Int) -> Int {
         let s = min(1, max(0, speed))
@@ -84,24 +95,48 @@ enum LEDProgram {
     }
 
     /// Rainbow as an evenly spaced hue gradient across the LEDs. When `animated`,
-    /// it rotates a full turn over 3 frames so it loops seamlessly and appears to
-    /// flow; otherwise it's a single held gradient. Uses the doc's proven per-LED
-    /// segment syntax.
+    /// it rotates a full turn over `frames` evenly spaced steps so it loops
+    /// seamlessly and appears to flow; otherwise it's a single held gradient.
+    /// Uses the doc's proven per-LED segment syntax.
+    ///
+    /// Smoothness is bounded by the controller's 512-byte / 10-line program limit:
+    /// the firmware interpolates each step from the previous colors, so more, finer
+    /// rotation steps mean each LED sweeps a smaller hue arc per step and the flow
+    /// looks smoother. We pick the largest step count that still fits the budget
+    /// (many steps for a 2-LED device, fewer for an 8-LED strip), keeping the total
+    /// time for a full turn fixed so the apparent speed is unchanged.
     private static func rainbow(ledCount: Int, brightness: Int, animated: Bool, speed: Double) -> String {
         let n = max(1, ledCount)
-        let dur = frameMs(speed, slow: 1200, fast: 120)
-        func frame(_ offset: Double, timed: Bool) -> String {
-            (0..<n).map { i -> String in
-                let hue = (Double(i) / Double(n) + offset).truncatingRemainder(dividingBy: 1)
-                return "\(i):\(hsvHex(h: hue, s: 1, v: 1))" + (timed ? " \(dur)ms" : "")
-            }.joined(separator: timed ? "; " : " ")
+        guard animated else {
+            let gradient = (0..<n).map { "\(hsvHex(h: Double($0) / Double(n), s: 1, v: 1))" }
+                .joined(separator: " ")
+            return withBrightness(gradient, brightness)
         }
-        guard animated else { return withBrightness(frame(0, timed: false), brightness) }
-        var lines: [String] = []
-        if brightness < 255 { lines.append("brightness \(clampBrightness(brightness))") }
-        for f in 0..<3 { lines.append(frame(Double(f) / 3, timed: true)) }
-        lines.append("repeat")
-        return lines.joined(separator: "\n")
+        // Total time for one full rotation; split evenly across `frames` steps.
+        let turnMs = frameMs(speed, slow: 3600, fast: 360)
+        func program(frames: Int) -> String {
+            let d = compactDur(max(16, Int((Double(turnMs) / Double(frames)).rounded())))
+            var lines: [String] = []
+            if brightness < 255 { lines.append("brightness \(clampBrightness(brightness))") }
+            for f in 0..<frames {
+                let offset = Double(f) / Double(frames)
+                let segs = (0..<n).map { i -> String in
+                    let hue = (Double(i) / Double(n) + offset).truncatingRemainder(dividingBy: 1)
+                    return "\(i):\(hsvHex(h: hue, s: 1, v: 1)) \(d)"
+                }
+                lines.append(segs.joined(separator: "; "))
+            }
+            lines.append("repeat")
+            return lines.joined(separator: "\n")
+        }
+        // Largest step count (capped by the 10-line limit, less brightness + repeat)
+        // whose program still fits in 512 bytes. Falls back to the coarsest that fits.
+        let maxFrames = maxLines - (brightness < 255 ? 2 : 1)
+        for frames in stride(from: maxFrames, through: 3, by: -1) {
+            let candidate = program(frames: frames)
+            if validate(candidate).isValid { return candidate }
+        }
+        return program(frames: 3)
     }
 
     /// Quick indexed sparkle, clamped to the device's LEDs. Animated loops; the

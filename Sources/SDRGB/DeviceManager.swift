@@ -43,7 +43,8 @@ final class DeviceManager: ObservableObject {
     static let heartbeatInterval: TimeInterval = 120
 
     /// Known volume name → LED count. Unknown matching volumes default to 2.
-    nonisolated static let knownLEDCounts: [String: Int] = ["SDRGB": 8, "USBDOT": 2]
+    /// `SidePulse` is the 8-LED strip; `PulseDot` is the 2-LED dot.
+    nonisolated static let knownLEDCounts: [String: Int] = ["SidePulse": 8, "PulseDot": 2]
 
     @Published private(set) var devices: [Device] = []
     @Published var selectedID: String?
@@ -222,7 +223,7 @@ final class DeviceManager: ObservableObject {
             return validation
         }
         guard let device = selectedDevice else {
-            setStatus(.error, "No device connected — plug in SDRGB or USBDOT.")
+            setStatus(.error, "No device connected — plug in SidePulse or PulseDot.")
             return validation
         }
         let ledsURL = device.ledsURL
@@ -250,7 +251,7 @@ final class DeviceManager: ObservableObject {
         let validation = LEDProgram.validate(program)
         guard validation.isValid else { setStatus(.error, validation.message ?? "Invalid program."); return }
         guard selectedDevice != nil else {
-            setStatus(.error, "No device connected — plug in SDRGB or USBDOT."); return
+            setStatus(.error, "No device connected — plug in SidePulse or PulseDot."); return
         }
         pendingWrite?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -418,7 +419,7 @@ final class DeviceManager: ObservableObject {
     func loadCurrentProgram() {
         guard let device = selectedDevice else {
             currentProgram = nil
-            setStatus(.error, "No device connected — plug in SDRGB or USBDOT.")
+            setStatus(.error, "No device connected — plug in SidePulse or PulseDot.")
             return
         }
         let vol = device.volumeURL.path
