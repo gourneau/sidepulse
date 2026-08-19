@@ -177,6 +177,51 @@ final class FormatTests: XCTestCase {
         }
     }
 
+    /// The animated rainbow used to emit three hue-offset keyframes — ~411 bytes on
+    /// an 8-LED strip, the largest program the app produced. Seed + roll is a
+    /// fraction of that, and continuously interpolated instead of 3-stepped.
+    func testAnimatedRainbowSeedsThenRolls() {
+        let program = LEDProgram.presets.first { $0.id == "rainbow" }!.make(8, 255, true, 0.5)
+        let lines = program.split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 3, "seed, roll, repeat")
+        XCTAssertEqual(lines[0].split(separator: " ").count, 8, "one colour per LED")
+        XCTAssertTrue(lines[0].hasPrefix("#"), "positional colour list, not indexed")
+        XCTAssertTrue(lines[1].hasPrefix("roll "), "got \(lines[1])")
+        XCTAssertEqual(lines[2], "repeat")
+        XCTAssertLessThan(LEDProgram.stats(program).bytes, 130)
+    }
+
+    /// `roll` rotates whatever is currently visible, and an indexed assignment
+    /// leaves unmentioned LEDs holding their state — so the comet must be seeded
+    /// onto a cleared strip or it smears across whatever was showing.
+    func testChaseClearsTheStripBeforeSeedingTheComet() {
+        for ledCount in [2, 8] {
+            let program = LEDProgram.presets.first { $0.id == "chase" }!.make(ledCount, 255, true, 0.5)
+            let lines = program.split(separator: "\n").map(String.init)
+            XCTAssertEqual(lines.first, "off", "comet must be seeded onto a cleared strip")
+            XCTAssertTrue(lines.contains { $0.hasPrefix("roll ") })
+            XCTAssertEqual(lines.last, "repeat")
+        }
+    }
+
+    /// A 2-LED Dot must not be given a tail longer than the device.
+    func testChaseTailIsScaledToTheStrip() {
+        func cometSegments(_ ledCount: Int) -> Int {
+            let program = LEDProgram.presets.first { $0.id == "chase" }!.make(ledCount, 255, false, 0.5)
+            return program.split(separator: "\n").map(String.init)[1].split(separator: " ").count
+        }
+        XCTAssertEqual(cometSegments(2), 1)
+        XCTAssertEqual(cometSegments(8), 3)
+    }
+
+    func testStaticFormsOfRollPresetsDoNotRoll() {
+        for id in ["rainbow", "chase"] {
+            let program = LEDProgram.presets.first { $0.id == id }!.make(8, 255, false, 0.5)
+            XCTAssertFalse(program.contains("roll"), "\(id) static form should hold, not roll")
+            XCTAssertFalse(program.contains("repeat"), "\(id) static form should not loop")
+        }
+    }
+
     func testInfoModeBarsFitAndDegradeSensibly() {
         for ledCount in [2, 8] {
             for value in [0.0, 0.01, 0.5, 1.0] {
