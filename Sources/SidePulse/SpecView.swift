@@ -31,7 +31,10 @@ struct SpecView: View {
             }
         }
         .onDisappear {
-            NSApp.setActivationPolicy(.accessory)
+            // Only drop back if the Activity window isn't still up.
+            if !NSApp.windows.contains(where: { $0.title == ActivityWindow.title && $0.isVisible }) {
+                NSApp.setActivationPolicy(.accessory)
+            }
         }
     }
 

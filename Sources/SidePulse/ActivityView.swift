@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// The 24h activity log window. Opened by clicking the header status dot (events)
 /// or the heart (keepalive writes).
@@ -45,6 +46,24 @@ struct ActivityView: View {
             .padding([.horizontal, .bottom], 12)
         }
         .frame(width: 440, height: 480)
+        .onAppear {
+            // Same dance as SpecView: an accessory (menu-bar) app opens windows
+            // behind the popover and can't bring them front, so become a regular
+            // app while one is up. Without the matching revert, opening Activity
+            // once left the app permanently in the Dock with a menu bar.
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            DispatchQueue.main.async {
+                NSApp.windows.first { $0.title == ActivityWindow.title }?
+                    .makeKeyAndOrderFront(nil)
+            }
+        }
+        .onDisappear {
+            // Only drop back if the spec window isn't still up.
+            if !NSApp.windows.contains(where: { $0.title == SpecWindow.title && $0.isVisible }) {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
     }
 
     private var filtered: [ActivityEvent] {

@@ -157,11 +157,16 @@ final class DeviceManager: ObservableObject {
         return nil
     }
 
+    /// Most LEDs we will believe a device has. A derived count feeds array sizing
+    /// in the UI, so a malformed or hostile INIT.LED must not be able to ask for an
+    /// arbitrary number of colour wells.
+    nonisolated static let maxLEDCount = 64
+
     /// LED count derived from the firmware-seeded `INIT.LED`: the highest `N:`
     /// index it addresses, plus one. `nil` when the file addresses no LED by index.
     nonisolated static func ledCountFromInit(_ text: String) -> Int? {
         var highest = -1
-        for raw in text.split(separator: "\n") {
+        for raw in LEDProgram.normalizeNewlines(text).split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix(";") || line.hasPrefix("//") || line.hasPrefix("# ") { continue }
             for segment in line.split(whereSeparator: { $0 == " " || $0 == ";" }) {
@@ -171,7 +176,31 @@ final class DeviceManager: ObservableObject {
             }
         }
         guard highest >= 0 else { return nil }
-        return max(2, highest + 1)
+        return min(maxLEDCount, max(2, highest + 1))
+    }
+
+    // MARK: Remembered per-device facts
+    //
+    // Keyed by volume name rather than mount path: the path is stable in practice
+    // but the name is what we match on, and it is what survives a remount.
+
+    nonisolated static func rememberedLEDCount(_ volumeName: String) -> Int? {
+        let stored = UserDefaults.standard.integer(forKey: "ledCount." + volumeName)
+        return stored > 0 ? stored : nil
+    }
+
+    nonisolated static func rememberLEDCount(_ count: Int, for volumeName: String) {
+        UserDefaults.standard.set(count, forKey: "ledCount." + volumeName)
+    }
+
+    /// True once we have written this volume's `INIT.LED`. After that the file
+    /// holds *our* program, and says nothing about how many LEDs the hardware has.
+    nonisolated static func hasWrittenInit(_ volumeName: String) -> Bool {
+        UserDefaults.standard.bool(forKey: "initWritten." + volumeName)
+    }
+
+    nonisolated static func noteInitWritten(_ volumeName: String) {
+        UserDefaults.standard.set(true, forKey: "initWritten." + volumeName)
     }
 
     @Published private(set) var devices: [Device] = []
@@ -193,13 +222,13 @@ final class DeviceManager: ObservableObject {
     @Published var activityFilter: ActivityFilter = .all
     /// The last LED program actually written, for self-heal after a device reset.
     private var lastWrittenLEDS: String?
+    /// Whether the most recent `deliver` actually reached the I/O queue. Info mode
+    /// reads this so it never dedups against a frame that was silently dropped.
+    private var lastDeliveryAccepted = false
     /// Each volume's last `uptime_ms` from STATUS.TXT. A value that goes *backwards*
     /// means the controller power-cycled — the only reliable restart signal this
     /// device gives us (see `healIfRestarted`).
     private var lastUptimeMs: [String: Int] = [:]
-    /// Highest LED count ever derived for a volume, so the count can't shrink mid-run
-    /// once we start writing INIT.LED ourselves (see `applyScan`).
-    private var highestLEDCount: [String: Int] = [:]
     /// Whether a device has been seen this run (gates auto-repair so a device-less
     /// Mac never fires the privileged repair).
     private var everHadDevice = false
@@ -402,7 +431,6 @@ final class DeviceManager: ObservableObject {
         inFlightVolumes.removeAll()
         // A different unit may be behind the same mount point now — re-learn it.
         lastUptimeMs.removeAll()
-        highestLEDCount.removeAll()
         rescan()
     }
 
@@ -494,7 +522,9 @@ final class DeviceManager: ObservableObject {
         for vol in vols {
             let name = vol.lastPathComponent
             guard let stem = nameStem(for: name) else { continue }
-            var count = stem ?? defaultLEDCount
+            // A name that states the model is the most trustworthy thing we have,
+            // then anything we learned earlier, then the 8-LED Pro layout.
+            var count = stem ?? rememberedLEDCount(name) ?? defaultLEDCount
             if verify {
                 let leds = vol.appendingPathComponent("LEDS.LED").path
                 let seed = vol.appendingPathComponent("INIT.LED").path
@@ -505,25 +535,26 @@ final class DeviceManager: ObservableObject {
                     #"test -f "$1" || exit 1; cat "$2" 2>/dev/null; exit 0"#,
                     [leds, seed], timeout: ioTimeout)
                 guard result == .ok else { continue }
-                if let text, let fromInit = ledCountFromInit(text) { count = fromInit }
+                // Only a *firmware-seeded* INIT.LED describes the hardware. Once
+                // "save as power-on default" has overwritten it, the file is our own
+                // program — a Chase preset addresses three LEDs, and believing it
+                // would turn an 8-LED Pro into a 3-LED device permanently. And when
+                // the name already states the model, the file adds nothing.
+                if stem == nil, !hasWrittenInit(name),
+                   let text, let fromInit = ledCountFromInit(text) {
+                    // Never lower a count already learned: a clipped read — macOS
+                    // serving a stale cached directory-entry size — truncates
+                    // INIT.LED mid-file and would under-report the strip.
+                    count = max(fromInit, rememberedLEDCount(name) ?? 0)
+                    rememberLEDCount(count, for: name)
+                }
             }
             found.append(Device(volumeURL: vol, name: name, ledCount: count))
         }
         return found.sorted { $0.name < $1.name }
     }
 
-    private func applyScan(_ scanned: [Device]) {
-        // INIT.LED is where the LED count comes from, and we also *write* INIT.LED
-        // ("save as power-on default"). A user program addressing fewer LEDs than
-        // the strip has would otherwise shrink the count and leave real LEDs dark,
-        // so a count learned for a volume is a floor for the rest of the run.
-        let found = scanned.map { device -> Device in
-            let best = max(device.ledCount, highestLEDCount[device.id] ?? 0)
-            highestLEDCount[device.id] = best
-            return best == device.ledCount
-                ? device
-                : Device(volumeURL: device.volumeURL, name: device.name, ledCount: best)
-        }
+    private func applyScan(_ found: [Device]) {
         let changed = found != devices
         devices = found
         if found.isEmpty { deviceStatus = nil }
@@ -572,9 +603,10 @@ final class DeviceManager: ObservableObject {
         // The spec says writing INIT.LED also applies it immediately, so it
         // genuinely becomes the visible state and is what self-heal should restore.
         lastWrittenLEDS = program
+        if kind == .initLeds { DeviceManager.noteInitWritten(device.name) }
         let targetURL = kind == .initLeds ? device.initURL : device.ledsURL
         let text = LEDProgram.wireText(program)
-        enqueueIO(kind: kind, volume: device.volumeURL.path) {
+        lastDeliveryAccepted = enqueueIO(kind: kind, volume: device.volumeURL.path) {
             DeviceManager.performWrite(text, to: targetURL)
         }
         return validation
@@ -591,9 +623,13 @@ final class DeviceManager: ObservableObject {
     /// nor mount events can see the restart. STATUS.TXT is cached by the host for
     /// ~5s, which is irrelevant at a 60s beat.
     private func healIfRestarted() {
-        guard let device = selectedDevice, let intended = lastWrittenLEDS,
+        guard let device = selectedDevice,
               !stuckVolumes.contains(device.volumeURL.path),
               !inFlightVolumes.contains(device.volumeURL.path) else { return }
+        // Read STATUS.TXT even with nothing to restore: the same read feeds the
+        // gear-menu firmware readout, and it establishes the uptime baseline that
+        // a later restart is measured against.
+        let intended = lastWrittenLEDS
         let url = device.statusURL
         let vol = device.volumeURL.path
         let previous = lastUptimeMs[vol]
@@ -614,6 +650,7 @@ final class DeviceManager: ObservableObject {
                 self.lastUptimeMs[vol] = uptime
                 // First reading this run is a baseline, not a restart.
                 guard let previous, uptime < previous else { return }
+                guard let intended else { return }   // restarted, but nothing of ours to restore
                 self.log(.repair, "Device restarted — re-applying LEDs")
                 self.lastInfoProgram = nil          // bypass info dedup
                 _ = self.deliver(intended, kind: .info)  // silent re-apply
@@ -737,8 +774,12 @@ final class DeviceManager: ObservableObject {
         }
         program = LEDProgram.withBrightness(program, infoBrightness)
         if !force && program == lastInfoProgram { return }
-        lastInfoProgram = program
         deliver(program, kind: .info)
+        // Only remember it if it was actually queued. applyScan calls beat() first,
+        // which takes the volume's single-flight slot synchronously, so the forced
+        // frame right after a (re)connect is otherwise dropped *and* then deduped
+        // against on every later tick — leaving the strip on whatever INIT.LED lit.
+        lastInfoProgram = lastDeliveryAccepted ? program : nil
     }
 
     // MARK: - Heartbeat (keepalive)
@@ -793,14 +834,20 @@ final class DeviceManager: ObservableObject {
     /// on a background thread and launches a child process that does the actual
     /// device I/O with a hard timeout, so a wedge is contained in that child —
     /// the app stays responsive and can still quit cleanly.
+    /// Returns false when the op was **not** accepted — the volume is wedged, or
+    /// already has an op in flight. A dropped op never runs and never reports, so a
+    /// caller that caches "we already sent this" has to know the difference or it
+    /// will dedup against a write that never happened.
+    @discardableResult
     private func enqueueIO(kind: WriteKind, volume: String,
-                           _ op: @escaping @Sendable () -> IOResult) {
-        guard !stuckVolumes.contains(volume), !inFlightVolumes.contains(volume) else { return }
+                           _ op: @escaping @Sendable () -> IOResult) -> Bool {
+        guard !stuckVolumes.contains(volume), !inFlightVolumes.contains(volume) else { return false }
         inFlightVolumes.insert(volume)
         ioQueue.async { [weak self] in
             let result = op()
             Task { @MainActor [weak self] in self?.finishIO(kind: kind, volume: volume, result: result) }
         }
+        return true
     }
 
     private func finishIO(kind: WriteKind, volume: String, result: IOResult) {

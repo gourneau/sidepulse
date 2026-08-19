@@ -213,11 +213,22 @@ enum LEDProgram {
         }
     }
 
+    /// Line endings as the controller sees them.
+    ///
+    /// Swift treats `\r\n` as a **single** `Character` that does not compare equal
+    /// to `\n`, so `split(separator: "\n")` never sees it. Pasted CRLF text would
+    /// otherwise read as one enormous line: under the line budget, over nobody's
+    /// idea of correct, and invisible to duration validation.
+    static func normalizeNewlines(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+    }
+
     /// The exact bytes that land on the device: the program with exactly one
     /// trailing newline. Validation and the UI counter both measure this, so what
     /// we count is what the controller parses.
     static func wireText(_ program: String) -> String {
-        var text = program
+        var text = normalizeNewlines(program)
         while text.hasSuffix("\n") { text.removeLast() }
         return text + "\n"
     }
@@ -245,7 +256,7 @@ enum LEDProgram {
     /// before the controller rejects the whole program with a red blink.
     static func longestDurationMs(_ program: String) -> Int? {
         var longest: Int?
-        for raw in program.split(separator: "\n") {
+        for raw in normalizeNewlines(program).split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix(";") || line.hasPrefix("//") || line.hasPrefix("# ") { continue }
             for token in line.split(whereSeparator: { $0 == " " || $0 == ";" }) {
@@ -256,10 +267,20 @@ enum LEDProgram {
         return longest
     }
 
-    /// `330ms`, `2s`, `0.33s` → milliseconds. Anything else → `nil`.
+    /// `330ms`, `2s`, `0.33s` → milliseconds. Anything else — including a negative
+    /// or absurd value — is `nil`.
+    ///
+    /// The bounds are not decoration. `Double("1e999")` is `+infinity` and
+    /// `Double("1e30")` is finite but far past `Int64`; converting either with
+    /// `Int(_:)` traps, and this runs on **every keystroke** in the DSL editor, so
+    /// typing `1e999s` would take the app down.
     static func durationMs(_ token: String) -> Int? {
-        if token.hasSuffix("ms") { return Int(token.dropLast(2)) }
+        if token.hasSuffix("ms") {
+            guard let ms = Int(token.dropLast(2)), ms >= 0 else { return nil }
+            return ms
+        }
         if token.hasSuffix("s"), let seconds = Double(token.dropLast()) {
+            guard seconds.isFinite, seconds >= 0, seconds <= 1_000_000 else { return nil }
             return Int((seconds * 1000).rounded())
         }
         return nil
