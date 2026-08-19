@@ -162,7 +162,12 @@ header.nav {
   width: 16px; height: 16px; border-radius: 50%;
   background: #ff0000;
   animation: roll 1.98s linear infinite;
-  animation-delay: calc(var(--i) * -0.2475s);
+  /* `roll` moves colours *along* the strip, so LED i lags LED 0 by i/8 of a turn.
+     A negative delay of i/8 is an advance, not a lag — it renders the gradient
+     mirrored against the program printed above it. Subtracting a full period
+     turns the lag into an equivalent advance without an opening pause.
+     Check: at t=0 LED 1 must be #ffbf00 and LED 5 #0040ff, i.e. the seed order. */
+  animation-delay: calc(var(--i) * 0.2475s - 1.98s);
 }
 @keyframes roll {
   0%    { background: #ff0000; box-shadow: 0 0 10px 2px #ff0000aa, 0 0 26px 8px #ff000040; }
