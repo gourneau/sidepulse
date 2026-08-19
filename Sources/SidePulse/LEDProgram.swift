@@ -71,6 +71,9 @@ enum LEDProgram {
         Preset("sparkle", "Sparkle", "sparkles", animatable: true) { n, b, anim, speed in
             sparkle(ledCount: n, brightness: b, animated: anim, speed: speed)
         },
+        Preset("chase", "Chase", "arrow.trianglehead.clockwise", animatable: true) { n, b, anim, speed in
+            chase(ledCount: n, brightness: b, animated: anim, speed: speed)
+        },
         Preset("white", "White", "sun.max") { _, b, _, _ in withBrightness("#ffffff", b) },
         Preset("off", "Off", "power") { _, _, _, _ in off() }
     ]
@@ -89,25 +92,44 @@ enum LEDProgram {
         brightness < 255 ? "brightness \(clampBrightness(brightness))\n\(program)" : program
     }
 
-    /// Rainbow as an evenly spaced hue gradient across the LEDs. When `animated`,
-    /// it rotates a full turn over 3 frames so it loops seamlessly and appears to
-    /// flow; otherwise it's a single held gradient. Uses the doc's proven per-LED
-    /// segment syntax.
+    /// Rainbow as an evenly spaced hue gradient across the LEDs.
+    ///
+    /// Animated, this seeds the gradient once and hands the rotation to the
+    /// controller's `roll` verb. The old form emitted three hue-offset keyframes —
+    /// ~411 bytes on an 8-LED strip, the largest program this app produced, and
+    /// visibly stepped because it only ever showed three positions. Seed + roll is
+    /// ~90 bytes and continuously interpolated. `roll` rotates whatever is
+    /// *currently visible*, so the seed line is mandatory, not decorative.
     private static func rainbow(ledCount: Int, brightness: Int, animated: Bool, speed: Double) -> String {
         let n = max(1, ledCount)
-        let dur = frameMs(speed, slow: 1200, fast: 120)
-        func frame(_ offset: Double, timed: Bool) -> String {
-            (0..<n).map { i -> String in
-                let hue = (Double(i) / Double(n) + offset).truncatingRemainder(dividingBy: 1)
-                return "\(i):\(hsvHex(h: hue, s: 1, v: 1))" + (timed ? " \(dur)ms" : "")
-            }.joined(separator: timed ? "; " : " ")
-        }
-        guard animated else { return withBrightness(frame(0, timed: false), brightness) }
-        var lines: [String] = []
-        if brightness < 255 { lines.append("brightness \(clampBrightness(brightness))") }
-        for f in 0..<3 { lines.append(frame(Double(f) / 3, timed: true)) }
-        lines.append("repeat")
-        return lines.joined(separator: "\n")
+        let gradient = (0..<n)
+            .map { hsvHex(h: Double($0) / Double(n), s: 1, v: 1) }
+            .joined(separator: " ")
+        guard animated else { return withBrightness(gradient, brightness) }
+        // Time for one full wraparound, so apparent speed matches the old builder.
+        let turn = frameMs(speed, slow: 3600, fast: 360)
+        return withBrightness("\(gradient)\nroll \(turn)ms linear\nrepeat", brightness)
+    }
+
+    /// A comet chasing around the strip: seed a head with a dimming tail, then roll
+    /// it. The tail is scaled to the strip so a 2-LED Dot gets a single lit LED
+    /// rather than a tail longer than the device.
+    private static func chase(ledCount: Int, brightness: Int, animated: Bool, speed: Double) -> String {
+        let n = max(1, ledCount)
+        let tail = max(1, min(3, n / 2))
+        // Head at full, each tail LED half as bright as the one before it.
+        let comet = (0..<tail)
+            .map { i -> String in
+                let value = 1.0 / pow(2, Double(i))
+                return "\(i):\(hsvHex(h: 0.52, s: 0.85, v: value))"
+            }
+            .joined(separator: " ")
+        // `off` first: an indexed assignment leaves unmentioned LEDs holding their
+        // current state, which would smear the comet across whatever was showing.
+        let seed = "off\n\(comet)"
+        guard animated else { return withBrightness(seed, brightness) }
+        let turn = frameMs(speed, slow: 3000, fast: 500)
+        return withBrightness("\(seed)\nroll \(turn)ms linear\nrepeat", brightness)
     }
 
     /// Quick indexed sparkle, clamped to the device's LEDs. Animated loops; the

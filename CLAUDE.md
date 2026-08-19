@@ -99,13 +99,19 @@ not `openssl`.
   (background only) confirms `LEDS.LED` via a bounded isolated child — and reads
   `INIT.LED` in the same child to derive the LED count — so a same-named user
   volume isn't scribbled with `LEDS.LED`.
-- **Self-heal keys off `uptime_ms`, not file content.** The firmware plays
-  `INIT.LED` on power-up but **never rewrites `LEDS.LED`** — measured on a real
-  unit, `LEDS.LED`'s mtime stayed a month stale across power cycles *and* a
-  physical re-seat, while `uptime_ms` reset to ~1000. The volume stays mounted
-  throughout, so mount events can't see it either. `healIfRestarted()` reads
-  `STATUS.TXT` after each keepalive and re-applies `lastWrittenLEDS` when
-  `uptime_ms` goes backwards. Root cause of "overnight LEDs off."
+- **Self-heal keys off `uptime_ms`, not file content.** On power-up the firmware
+  restores `LEDS.LED` from `INIT.LED`, but **only when the two differ** — when
+  they already match it leaves the directory entry alone, so `LEDS.LED`'s mtime
+  can stay weeks stale across power cycles *and* a physical re-seat while
+  `uptime_ms` resets to ~1000. And after such a restore, reads can come back
+  **clipped**: macOS keeps serving the previous cached directory-entry size, so
+  `cat LEDS.LED` returned exactly 86 bytes — the length of the program written
+  before the power cycle — of the 188-byte startup fill, cut mid-line. Neither the
+  mtime nor the content is a trustworthy signal. The volume stays mounted
+  throughout, so mount events can't see the restart either. `healIfRestarted()`
+  reads `STATUS.TXT` after each keepalive and re-applies `lastWrittenLEDS`
+  whenever `uptime_ms` goes backwards — true regardless of what `LEDS.LED` holds
+  or how much of it the host will hand back. Root cause of "overnight LEDs off."
 - **`STATUS.TXT`** is one `key value` per line, **NUL-padded** to 1024 bytes, and
   the host caches it for ~5s (irrelevant at a 60s beat).
 - **Keep `DeviceManager` re-entrancy in mind:** `deliver()`'s no-device re-check
