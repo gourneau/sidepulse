@@ -84,6 +84,16 @@ final class WakeGuard: ObservableObject {
         }
     }
 
+    /// Hand the privileged helper registration back to macOS.
+    ///
+    /// `nonisolated` and free of any instance state so an uninstaller can call it
+    /// from `init` without building a WakeGuard or touching a device. Failure is
+    /// not an error worth reporting: "it was never registered" throws here, and is
+    /// exactly the state we want to end in.
+    nonisolated static func deregisterHelper() {
+        try? SMAppService.daemon(plistName: HelperConstants.plistName).unregister()
+    }
+
     /// Register the privileged helper if needed; returns its status.
     private func ensureHelperRegistered() -> SMAppService.Status {
         if helperService.status == .enabled { return .enabled }
