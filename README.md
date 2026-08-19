@@ -24,8 +24,7 @@
 ## Install
 
 ```sh
-brew tap gourneau/sidepulse
-brew install --cask sidepulse
+brew install --cask gourneau/sidepulse/sidepulse
 ```
 
 Or [download the notarised build](https://github.com/gourneau/sidepulse/releases/latest),
