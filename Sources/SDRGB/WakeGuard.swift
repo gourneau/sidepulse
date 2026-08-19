@@ -180,17 +180,17 @@ final class WakeGuard: ObservableObject {
         /usr/bin/pkill -9 -f 'libexec/fskit_agent' 2>/dev/null || true
         /usr/bin/pkill -9 -f 'libexec/fskit_helper' 2>/dev/null || true
         sleep 1
-        for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null || true; done
+        for v in SidePulse SidePulsePro SidePulseDot; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null || true; done
         sleep 2
         for i in 1 2 3 4 5; do
           ok=0
-          for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null && ok=1 || true; done
+          for v in SidePulse SidePulsePro SidePulseDot; do /usr/sbin/diskutil mount "$v" 2>/dev/null && ok=1 || true; done
           [ "$ok" = 1 ] && break
           sleep 1
         done
         exit 0
         """
-        let tmp = NSTemporaryDirectory() + "sdrgb-repair-\(UUID().uuidString).sh"
+        let tmp = NSTemporaryDirectory() + "sidepulse-repair-\(UUID().uuidString).sh"
         guard (try? script.write(toFile: tmp, atomically: true, encoding: .utf8)) != nil else { return }
         defer { try? FileManager.default.removeItem(atPath: tmp) }
         let osa = "do shell script \"/bin/sh '\(tmp)'\" with administrator privileges"

@@ -46,11 +46,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         /usr/bin/pkill -9 -f 'libexec/fskit_agent' 2>/dev/null
         /usr/bin/pkill -9 -f 'libexec/fskit_helper' 2>/dev/null
         sleep 1
-        for v in SDRGB USBDOT; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null; done
+        for v in SidePulse SidePulsePro SidePulseDot; do /usr/sbin/diskutil unmount force "/Volumes/$v" 2>/dev/null; done
         sleep 2
         for i in 1 2 3 4 5; do
           ok=0
-          for v in SDRGB USBDOT; do /usr/sbin/diskutil mount "$v" 2>/dev/null && ok=1; done
+          for v in SidePulse SidePulsePro SidePulseDot; do /usr/sbin/diskutil mount "$v" 2>/dev/null && ok=1; done
           [ "$ok" = 1 ] && break
           sleep 1
         done
