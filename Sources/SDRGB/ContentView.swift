@@ -283,6 +283,19 @@ struct ContentView: View {
     private var settingsMenu: some View {
         Menu {
             Text("SDRGB \(appVersion)")
+            // The firmware's own readout, from the STATUS.TXT the keepalive
+            // already reads each beat — no extra device I/O to show it.
+            if let status = device.deviceStatus {
+                if let version = status.firmwareVersion { Text("Firmware \(version)") }
+                if let detail = firmwareDetail(status) { Text(detail) }
+            }
+            Divider()
+            // INIT.LED is replayed on power-up, which is what actually survives the
+            // SD reader powering the card down after a few idle minutes.
+            Button("Save current LEDs as power-on default") {
+                device.saveCurrentAsStartup()
+            }
+            .disabled(!device.canSaveStartup)
             Divider()
             Button("Reconnect / repair device") { runRepair() }
                 .disabled(wake.repairBusy)
@@ -292,6 +305,8 @@ struct ContentView: View {
                 get: { loginEnabled },
                 set: { loginEnabled = LoginItem.setEnabled($0) }
             ))
+            // Quitting writes off to LEDS.LED only; INIT.LED is deliberately left
+            // alone, so a saved power-on default still comes back on next power-up.
             Toggle("Turn off LEDs when quitting", isOn: $device.ledsOffOnQuit)
             Divider()
             Button("Quit SDRGB") { NSApplication.shared.terminate(nil) }
@@ -301,6 +316,16 @@ struct ContentView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    /// Uptime / temperature / state line for the gear menu, when the device
+    /// reported any of them.
+    private func firmwareDetail(_ status: DeviceStatus) -> String? {
+        var parts: [String] = []
+        if let uptime = status.uptimeDescription { parts.append("up \(uptime)") }
+        if let temp = status.temperatureC { parts.append(String(format: "%.1f°C", temp)) }
+        if let state = status.state { parts.append(state) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// The app's own version, from the bundle's Info.plist (stamped at build time
@@ -561,6 +586,9 @@ struct ContentView: View {
                     .foregroundStyle(validation.isValid ? Color.secondary : Color.orange)
                 Spacer()
                 if busy { Text("Writing…").font(.caption2).foregroundStyle(.secondary) }
+                Button("Set as power-on") { device.saveAsStartup(rawText) }
+                    .disabled(!validation.isValid || busy || device.selectedDevice == nil)
+                    .help("Write this to INIT.LED, the program the device replays every time it powers up.")
                 Button("Send") { activePreset = nil; device.send(rawText) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!validation.isValid || busy)
