@@ -38,6 +38,49 @@ struct Device: Identifiable, Equatable, Sendable {
     }
 }
 
+/// The firmware's own readout, parsed from `STATUS.TXT`.
+///
+/// The file is one `key value` per line, NUL-padded to 1024 bytes, so every line
+/// is trimmed of NULs as well as whitespace. Values can contain spaces
+/// (`firmware_git abe603d0d6e7 dirty`), so the key is everything before the first
+/// space and the value is the rest of the line.
+struct DeviceStatus: Equatable, Sendable {
+    var firmwareVersion: String?
+    var firmwareBuild: String?
+    var uptimeMs: Int?
+    var temperatureC: Double?
+    var state: String?
+
+    init(_ text: String) {
+        let padding = CharacterSet(charactersIn: "\0").union(.whitespaces)
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: padding)
+            guard let space = line.firstIndex(of: " ") else { continue }
+            let value = line[line.index(after: space)...].trimmingCharacters(in: padding)
+            switch line[..<space] {
+            case "firmware_version": firmwareVersion = value
+            case "firmware_build": firmwareBuild = value
+            case "uptime_ms": uptimeMs = Int(value)
+            case "temp_c": temperatureC = Double(value)
+            case "state": state = value
+            default: break
+            }
+        }
+    }
+
+    var isEmpty: Bool { firmwareVersion == nil && uptimeMs == nil }
+
+    /// "3m 12s" / "2h 41m" since the controller last powered up.
+    var uptimeDescription: String? {
+        guard let uptimeMs else { return nil }
+        let seconds = uptimeMs / 1000
+        let hours = seconds / 3600, minutes = (seconds % 3600) / 60, rest = seconds % 60
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        if minutes > 0 { return "\(minutes)m \(rest)s" }
+        return "\(rest)s"
+    }
+}
+
 /// A timestamped entry for the 24h activity log (heart = keepalive, dot = events).
 struct ActivityEvent: Identifiable, Sendable {
     let id = UUID()
@@ -140,6 +183,9 @@ final class DeviceManager: ObservableObject {
     @Published private(set) var status: AppStatus?
     /// The program currently on the selected device's LEDS.LED (read on demand).
     @Published private(set) var currentProgram: String?
+    /// The selected device's firmware readout. Refreshed by the same STATUS.TXT
+    /// read the restart check already does each beat, so it costs no extra I/O.
+    @Published private(set) var deviceStatus: DeviceStatus?
 
     /// Rolling 24h activity log (heart popup = keepalive, dot popup = events).
     @Published private(set) var events: [ActivityEvent] = []
@@ -184,8 +230,9 @@ final class DeviceManager: ObservableObject {
     private let ioQueue = DispatchQueue(label: "com.gourneau.SDRGB.io", qos: .utility)
     /// `.leds` = a discrete manual program (flashes the status dot); `.liveLeds`
     /// = a live slider write (quiet, so dragging doesn't strobe); `.info` = an
-    /// Info-mode frame (silent); `.keepalive` = a read.
-    private enum WriteKind { case leds, liveLeds, info, keepalive }
+    /// Info-mode frame (silent); `.initLeds` = the power-on program, written to
+    /// INIT.LED instead of LEDS.LED; `.keepalive` = the heartbeat touch.
+    private enum WriteKind { case leds, liveLeds, info, initLeds, keepalive }
 
     /// True while a write/read to that device is outstanding (UI "Writing…").
     func isWriting(_ device: Device?) -> Bool {
@@ -463,6 +510,7 @@ final class DeviceManager: ObservableObject {
         }
         let changed = found != devices
         devices = found
+        if found.isEmpty { deviceStatus = nil }
         if !found.isEmpty { everHadDevice = true }
         // Keep selection valid, preferring the 8-LED device by default.
         if selectedID == nil || !found.contains(where: { $0.id == selectedID }) {
@@ -506,11 +554,13 @@ final class DeviceManager: ObservableObject {
             return validation
         }
         if kind == .leds || kind == .liveLeds { lastUserProgram = program }   // restore-after-sleep
-        lastWrittenLEDS = program   // for self-heal after a device reset
-        let ledsURL = device.ledsURL
+        // The spec says writing INIT.LED also applies it immediately, so it
+        // genuinely becomes the visible state and is what self-heal should restore.
+        lastWrittenLEDS = program
+        let targetURL = kind == .initLeds ? device.initURL : device.ledsURL
         let text = LEDProgram.wireText(program)
         enqueueIO(kind: kind, volume: device.volumeURL.path) {
-            DeviceManager.performWrite(text, to: ledsURL)
+            DeviceManager.performWrite(text, to: targetURL)
         }
         return validation
     }
@@ -538,10 +588,14 @@ final class DeviceManager: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.inFlightVolumes.remove(vol)
-                guard result == .ok, let text, let uptime = DeviceManager.uptimeMs(text) else {
+                guard result == .ok, let text else {
                     if result == .stuck { self.stuckVolumes.insert(vol) }
                     return
                 }
+                // One read serves both the restart check and the firmware readout.
+                let status = DeviceStatus(text)
+                if !status.isEmpty { self.deviceStatus = status }
+                guard let uptime = status.uptimeMs else { return }
                 self.lastUptimeMs[vol] = uptime
                 // First reading this run is a baseline, not a restart.
                 guard let previous, uptime < previous else { return }
@@ -552,17 +606,25 @@ final class DeviceManager: ObservableObject {
         }
     }
 
-    /// `uptime_ms` from a STATUS.TXT body. The file is one `key value` per line,
-    /// NUL-padded to 1024 bytes — the padding is why this parses line by line and
-    /// trims rather than scanning the whole blob.
-    nonisolated static func uptimeMs(_ statusText: String) -> Int? {
-        for raw in statusText.split(separator: "\n") {
-            let line = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\0").union(.whitespaces))
-            guard line.hasPrefix("uptime_ms ") else { continue }
-            return Int(line.dropFirst("uptime_ms ".count).trimmingCharacters(in: .whitespaces))
-        }
-        return nil
+    /// Write `program` to INIT.LED — the program the controller replays on power-up,
+    /// so the strip comes back correct after the SD reader powers the card down.
+    /// Per the spec the device also applies it immediately.
+    @discardableResult
+    func saveAsStartup(_ program: String) -> LEDProgram.Validation {
+        deliver(program, kind: .initLeds)
     }
+
+    /// Save whatever is showing now as the power-on default.
+    func saveCurrentAsStartup() {
+        guard let program = lastWrittenLEDS else {
+            setStatus(.error, "Nothing to save yet — pick a color or preset first.")
+            return
+        }
+        saveAsStartup(program)
+    }
+
+    /// True once there is something worth saving as the power-on default.
+    var canSaveStartup: Bool { lastWrittenLEDS != nil && selectedDevice != nil }
 
     /// A manual program (color/preset/raw). Takes over from Info mode and writes
     /// immediately. Returns the validation outcome so the UI can surface errors.
@@ -735,7 +797,7 @@ final class DeviceManager: ObservableObject {
             evaluateAutoRepair()
         case .failed:
             switch kind {
-            case .leds, .liveLeds, .info:
+            case .leds, .liveLeds, .info, .initLeds:
                 setStatus(.error, "Couldn’t write — the device may be unplugged or full.")
             case .keepalive:
                 lastHeartbeatOK = false
@@ -744,6 +806,8 @@ final class DeviceManager: ObservableObject {
             switch kind {
             case .leds:
                 setStatus(.success, "Updated")
+            case .initLeds:
+                setStatus(.success, "Saved as the power-on default")
             case .liveLeds, .info:
                 // Live/cycling writes stay quiet; clear any stale error/warning.
                 if let level = status?.level, level == .error || level == .warning { status = nil }

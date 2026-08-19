@@ -79,17 +79,36 @@ final class FormatTests: XCTestCase {
     // MARK: STATUS.TXT
 
     /// STATUS.TXT is one `key value` per line, NUL-padded to 1024 bytes.
-    func testUptimeIsParsedOutOfNULPaddedStatus() {
-        let status = "firmware_version 27225.3579\nuptime_ms 85003\ntemp_c 30.4\nstate idle\n"
-            + String(repeating: "\0", count: 64)
-        XCTAssertEqual(DeviceManager.uptimeMs(status), 85003)
+    func testStatusIsParsedOutOfNULPaddedFile() {
+        let status = """
+        firmware_version 27225.3579
+        firmware_build 2026-07-16T16:59:40Z
+        firmware_git abe603d0d6e7 dirty
+        uptime_ms 85003
+        temp_c 30.4
+        state idle
+        """ + String(repeating: "\0", count: 64)
+        let parsed = DeviceStatus(status)
+        XCTAssertEqual(parsed.firmwareVersion, "27225.3579")
+        XCTAssertEqual(parsed.firmwareBuild, "2026-07-16T16:59:40Z")
+        XCTAssertEqual(parsed.uptimeMs, 85003)
+        XCTAssertEqual(parsed.temperatureC, 30.4)
+        XCTAssertEqual(parsed.state, "idle")
+        XCTAssertFalse(parsed.isEmpty)
     }
 
-    func testUptimeIsNilWhenAbsent() {
-        XCTAssertNil(DeviceManager.uptimeMs("state idle\n"))
-        XCTAssertNil(DeviceManager.uptimeMs(""))
-        // A key that merely starts the same must not match.
-        XCTAssertNil(DeviceManager.uptimeMs("uptime_ms_total 5\n"))
+    func testStatusIsEmptyWhenTheFileSaysNothingUseful() {
+        XCTAssertTrue(DeviceStatus("").isEmpty)
+        XCTAssertTrue(DeviceStatus("state idle\n").isEmpty)
+        // A key that merely starts the same must not be mistaken for uptime_ms.
+        XCTAssertNil(DeviceStatus("uptime_ms_total 5\n").uptimeMs)
+    }
+
+    func testUptimeIsFormattedForTheUI() {
+        XCTAssertEqual(DeviceStatus("uptime_ms 45000").uptimeDescription, "45s")
+        XCTAssertEqual(DeviceStatus("uptime_ms 192000").uptimeDescription, "3m 12s")
+        XCTAssertEqual(DeviceStatus("uptime_ms 9660000").uptimeDescription, "2h 41m")
+        XCTAssertNil(DeviceStatus("state idle").uptimeDescription)
     }
 
     // MARK: Program measurement
