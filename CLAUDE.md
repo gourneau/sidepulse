@@ -54,9 +54,9 @@ scripts/release.sh v0.1.0-beta.N ["optional notes"]   # build→sign→notarize�
   helper to register (`SMAppService.daemon`); `package_app.sh` signs both with
   hardened runtime and embeds the LaunchDaemon plist.
 - Notarization: `xcrun notarytool` via the stored keychain profile
-  **`sidepulse-notary`** (the older `sdrgb-notary` is still accepted, so an
-  existing keychain entry keeps working). If absent, `release.sh` falls back to
-  `AuthKey_*.p8` in the
+  **`sidepulse-notary`**, or `sdrgb-notary` — the name this Mac's existing App
+  Store Connect credential happens to be stored under. If absent, `release.sh`
+  falls back to `AuthKey_*.p8` in the
   repo root + `ISSUER_ID=<uuid>` in `.env`.
 - CI: pushing a `v*` tag runs `.github/workflows/release.yml` (runs-on
   `macos-15`) which imports the cert from repo secrets and does the same. The

@@ -136,6 +136,4 @@ Apple-sanctioned way. **Needs a Developer ID Application cert** (we have Team
 ## Repo
 
 - `github.com/gourneau/sidepulse` (branch `main`).
-- The app was called SDRGB until the device shipped as **SidePulse**; the bundle
-  id is now `com.gourneau.SidePulse`. Anyone upgrading from an SDRGB build must
-  run `scripts/uninstall_legacy.sh` first — see the README.
+- Bundle id is `com.gourneau.SidePulse`; the helper is `…SidePulse.helper`.
