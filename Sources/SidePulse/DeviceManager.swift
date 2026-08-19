@@ -423,15 +423,27 @@ final class DeviceManager: ObservableObject {
     /// un-eject it — only a sleep/wake re-probe or a physical re-seat recovers it.
     @Published private(set) var ghostEjected = false
 
-    /// Available metrics. Battery = white, CPU = blue, Memory = green.
+    /// Available metrics. Battery = white, CPU = blue, GPU = purple, Memory = green.
     private(set) lazy var metrics: [Metric] = [
         Metric(id: "battery", name: "Battery", symbol: "battery.100",
                color: .white, hex: "#ffffff") { [weak self] in self?.sysMetrics.batteryLevel() ?? 0 },
         Metric(id: "cpu", name: "CPU", symbol: "cpu",
                color: .blue, hex: "#0040ff") { [weak self] in self?.sysMetrics.cpuLoad() ?? 0 },
+        Metric(id: "gpu", name: "GPU", symbol: DeviceManager.symbol("gpu", fallback: "cube.transparent"),
+               color: Color(red: 0.63, green: 0, blue: 1), hex: "#a000ff") { [weak self] in
+                   self?.sysMetrics.gpuLoad() ?? 0
+               },
         Metric(id: "memory", name: "Memory", symbol: "memorychip",
                color: .green, hex: "#00ff00") { [weak self] in self?.sysMetrics.memoryUsed() ?? 0 }
     ]
+
+    /// The first of these SF Symbols that this macOS actually has. `gpu` only exists
+    /// from SF Symbols 5 (macOS 14) and the deployment target is 13, where asking for
+    /// it renders an empty box rather than failing.
+    nonisolated static func symbol(_ preferred: String, fallback: String) -> String {
+        NSImage(systemSymbolName: preferred, accessibilityDescription: nil) != nil
+            ? preferred : fallback
+    }
 
     var infoActive: Bool { !enabledMetrics.isEmpty }
 

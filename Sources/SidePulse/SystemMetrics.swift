@@ -71,6 +71,50 @@ final class SystemMetrics {
         return dTotal > 0 ? min(1, max(0, dUsed / dTotal)) : 0
     }
 
+    /// Fraction of GPU capacity in use (0...1).
+    ///
+    /// There is no public API for this, but every accelerator publishes its own
+    /// counters in the IO registry under `PerformanceStatistics`. Read across all
+    /// of them and take the busiest, since a Mac can have both an integrated and a
+    /// discrete GPU and the loaded one is the answer.
+    func gpuLoad() -> Double {
+        var iterator = io_iterator_t()
+        guard IOServiceGetMatchingServices(kIOMainPortDefault,
+                                           IOServiceMatching("IOAccelerator"),
+                                           &iterator) == KERN_SUCCESS else { return 0 }
+        defer { IOObjectRelease(iterator) }
+
+        var busiest = 0.0
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            defer { IOObjectRelease(service) }
+            var propsRef: Unmanaged<CFMutableDictionary>?
+            guard IORegistryEntryCreateCFProperties(service, &propsRef,
+                                                    kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                  let props = propsRef?.takeRetainedValue() as? [String: Any] else { continue }
+            if let used = SystemMetrics.utilization(from: props) { busiest = max(busiest, used) }
+        }
+        return busiest
+    }
+
+    /// Pull the utilization out of an accelerator's registry properties. Split out
+    /// from `gpuLoad()` so the dictionary handling — the part with the edge cases —
+    /// can be tested without a GPU.
+    ///
+    /// `Device Utilization %` is the aggregate figure; the siblings
+    /// (`Renderer`/`Tiler Utilization %`) describe individual stages. The value has
+    /// been seen as both an integer and a double, so accept either.
+    static func utilization(from properties: [String: Any]) -> Double? {
+        guard let stats = properties["PerformanceStatistics"] as? [String: Any] else { return nil }
+        let raw: Double
+        switch stats["Device Utilization %"] {
+        case let value as Int: raw = Double(value)
+        case let value as Double: raw = value
+        default: return nil
+        }
+        guard raw.isFinite else { return nil }
+        return min(1, max(0, raw / 100))
+    }
+
     /// Fraction of physical memory in use (0...1).
     func memoryUsed() -> Double {
         var stats = vm_statistics64()
