@@ -2,18 +2,28 @@ import SwiftUI
 import AppKit
 import IOKit.ps
 
-/// A mounted sdstatusbar device (one volume).
+/// A mounted SidePulse device (one volume).
 struct Device: Identifiable, Equatable, Sendable {
     let volumeURL: URL
     let name: String
     let ledCount: Int
 
     var id: String { volumeURL.path }
-    var ledsURL: URL { volumeURL.appendingPathComponent("LEDS.TXT") }
+    /// The LED program the controller is running right now.
+    var ledsURL: URL { volumeURL.appendingPathComponent("LEDS.LED") }
+    /// The program replayed on power-up. The firmware seeds it with its startup
+    /// fill, which is also what LEDS.LED reverts to after a reset.
+    var initURL: URL { volumeURL.appendingPathComponent("INIT.LED") }
+    /// Firmware readout (version, uptime, temperature, OTA slots).
     var statusURL: URL { volumeURL.appendingPathComponent("STATUS.TXT") }
-    var keepAliveURL: URL { volumeURL.appendingPathComponent("KEEPALIVE.TXT") }
+    /// Touched once a minute so the SD reader doesn't power the card down.
+    var keepAliveURL: URL { volumeURL.appendingPathComponent("keepalive") }
 
-    static func == (a: Device, b: Device) -> Bool { a.volumeURL == b.volumeURL }
+    /// LED count is part of identity: it's refined from INIT.LED by the verified
+    /// background scan, and the UI must notice when it changes.
+    static func == (a: Device, b: Device) -> Bool {
+        a.volumeURL == b.volumeURL && a.ledCount == b.ledCount
+    }
 }
 
 /// A timestamped entry for the 24h activity log (heart = keepalive, dot = events).
@@ -48,15 +58,66 @@ struct Metric: Identifiable {
     let read: () -> Double
 }
 
-/// Discovers sdstatusbar volumes, writes LED programs, and keeps every connected
-/// device alive by touching a dedicated heartbeat file every 2 minutes.
+/// Discovers SidePulse volumes, writes LED programs, and keeps every connected
+/// device alive by touching its `keepalive` file every minute.
 @MainActor
 final class DeviceManager: ObservableObject {
     /// How often we touch the heartbeat file. The whole point of the app.
     static let heartbeatInterval: TimeInterval = 60
 
-    /// Known volume name → LED count. Unknown matching volumes default to 2.
-    nonisolated static let knownLEDCounts: [String: Int] = ["SDRGB": 8, "USBDOT": 2]
+    /// Normalized volume-name stems we recognize. Shipping units mount as plain
+    /// `SidePulse`; the vendor docs promise the suffixed names, so all three are
+    /// listed. A `nil` count means "the name doesn't say which model".
+    nonisolated static let nameStems: [(stem: String, ledCount: Int?)] = [
+        ("sidepulsepro", 8), ("sidepulsedot", 2), ("sidepulse", nil)
+    ]
+    /// Fallback LED count when nothing better is known — the 8-LED SidePulse Pro
+    /// layout, the same fallback the vendor's own tooling uses.
+    nonisolated static let defaultLEDCount = 8
+
+    /// Lowercased with every non-alphanumeric character dropped, so "SidePulse Pro",
+    /// "SidePulse-Pro" and "SIDEPULSEPRO" all normalize alike.
+    nonisolated static func normalizedName(_ name: String) -> String {
+        name.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// The model a mounted volume's name claims, as a double optional: outer nil
+    /// = not one of ours, inner nil = ours but the name doesn't say which model.
+    ///
+    /// Deliberately an **exact** stem match (plus the 1–2 digit suffix macOS adds
+    /// for a duplicate mount, "SidePulse 1"), never an open prefix: `scanVolumes`
+    /// runs name-only on the main thread and feeds `deliver()`, which writes
+    /// immediately — a prefix rule would adopt "SidePulse Backup", the likeliest
+    /// name for a user's backup *of* a SidePulse, and create LEDS.LED on it.
+    nonisolated static func nameStem(for name: String) -> Int?? {
+        let normalized = normalizedName(name)
+        for candidate in nameStems {
+            if normalized == candidate.stem { return .some(candidate.ledCount) }
+            let tail = normalized.dropFirst(candidate.stem.count)
+            if normalized.hasPrefix(candidate.stem), !tail.isEmpty, tail.count <= 2,
+               tail.allSatisfy(\.isNumber) {
+                return .some(candidate.ledCount)
+            }
+        }
+        return nil
+    }
+
+    /// LED count derived from the firmware-seeded `INIT.LED`: the highest `N:`
+    /// index it addresses, plus one. `nil` when the file addresses no LED by index.
+    nonisolated static func ledCountFromInit(_ text: String) -> Int? {
+        var highest = -1
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix(";") || line.hasPrefix("//") || line.hasPrefix("# ") { continue }
+            for segment in line.split(whereSeparator: { $0 == " " || $0 == ";" }) {
+                guard let colon = segment.firstIndex(of: ":"),
+                      let index = Int(segment[..<colon]) else { continue }
+                highest = max(highest, index)
+            }
+        }
+        guard highest >= 0 else { return nil }
+        return max(2, highest + 1)
+    }
 
     @Published private(set) var devices: [Device] = []
     @Published var selectedID: String?
@@ -65,7 +126,7 @@ final class DeviceManager: ObservableObject {
     @Published private(set) var nextHeartbeat: Date?
     /// Latest user-facing status (success/info/warning/error) for the UI banner.
     @Published private(set) var status: AppStatus?
-    /// The program currently on the selected device's LEDS.TXT (read on demand).
+    /// The program currently on the selected device's LEDS.LED (read on demand).
     @Published private(set) var currentProgram: String?
 
     /// Rolling 24h activity log (heart popup = keepalive, dot popup = events).
@@ -74,6 +135,13 @@ final class DeviceManager: ObservableObject {
     @Published var activityFilter: ActivityFilter = .all
     /// The last LED program actually written, for self-heal after a device reset.
     private var lastWrittenLEDS: String?
+    /// Each volume's last `uptime_ms` from STATUS.TXT. A value that goes *backwards*
+    /// means the controller power-cycled — the only reliable restart signal this
+    /// device gives us (see `healIfRestarted`).
+    private var lastUptimeMs: [String: Int] = [:]
+    /// Highest LED count ever derived for a volume, so the count can't shrink mid-run
+    /// once we start writing INIT.LED ourselves (see `applyScan`).
+    private var highestLEDCount: [String: Int] = [:]
     /// Whether a device has been seen this run (gates auto-repair so a device-less
     /// Mac never fires the privileged repair).
     private var everHadDevice = false
@@ -276,6 +344,9 @@ final class DeviceManager: ObservableObject {
         // back — recover: clear stuck/in-flight tracking and resume.
         stuckVolumes.removeAll()
         inFlightVolumes.removeAll()
+        // A different unit may be behind the same mount point now — re-learn it.
+        lastUptimeMs.removeAll()
+        highestLEDCount.removeAll()
         rescan()
     }
 
@@ -302,7 +373,7 @@ final class DeviceManager: ObservableObject {
         guard ledsOffOnSleep, let device = selectedDevice else { return }
         let url = device.ledsURL
         enqueueIO(kind: .info, volume: device.volumeURL.path) {
-            DeviceManager.performWrite(LEDProgram.off() + "\n", to: url)
+            DeviceManager.performWrite(LEDProgram.wireText(LEDProgram.off()), to: url)
         }
     }
 
@@ -311,19 +382,19 @@ final class DeviceManager: ObservableObject {
         // synchronously instead. performWrite is bounded by its own timeout, and
         // every connected device gets switched off (skipping any that's wedged).
         guard ledsOffOnQuit else { return }
-        let off = LEDProgram.off() + "\n"
+        let off = LEDProgram.wireText(LEDProgram.off())
         for device in devices where !stuckVolumes.contains(device.volumeURL.path) {
             _ = DeviceManager.performWrite(off, to: device.ledsURL)
         }
     }
 
-    /// Scan every mounted volume for an sdstatusbar device. Runs the (potentially
+    /// Scan every mounted volume for a SidePulse device. Runs the (potentially
     /// blocking) filesystem work off the main thread, then applies on main.
     func rescan() {
         ioQueue.async { [weak self] in
             // Verify marker files (bounded, isolated) on the background queue, so a
-            // user volume that merely shares the name SDRGB/USBDOT isn't mistaken
-            // for a device (and scribbled with LEDS.TXT).
+            // user volume that merely shares the SidePulse name isn't mistaken for
+            // a device (and scribbled with LEDS.LED).
             let found = DeviceManager.scanVolumes(verify: true)
             Task { @MainActor [weak self] in self?.applyScan(found) }
         }
@@ -331,9 +402,10 @@ final class DeviceManager: ObservableObject {
 
     /// The blocking part of detection — safe to run on a background thread even
     /// if a stale mount hangs on it. When `verify` is true, each name-matched
-    /// volume must actually contain LEDS.TXT + STATUS.TXT (checked via a bounded
-    /// isolated child, so a wedged FAT mount can't hang us); when false it matches
-    /// by mount name only (fast, main-thread-safe — used as a last-ditch re-check).
+    /// volume must actually contain LEDS.LED, and the same bounded isolated child
+    /// prints INIT.LED so the LED count can be read off the firmware's own startup
+    /// fill (a wedged FAT mount can't hang us). When false it matches by mount name
+    /// only (fast, main-thread-safe — used as a last-ditch re-check).
     nonisolated static func scanVolumes(verify: Bool = false) -> [Device] {
         let fm = FileManager.default
         let vols = (try? fm.contentsOfDirectory(
@@ -346,19 +418,37 @@ final class DeviceManager: ObservableObject {
         var found: [Device] = []
         for vol in vols {
             let name = vol.lastPathComponent
-            guard let count = knownLEDCounts[name] else { continue }
+            guard let stem = nameStem(for: name) else { continue }
+            var count = stem ?? defaultLEDCount
             if verify {
-                let leds = vol.appendingPathComponent("LEDS.TXT").path
-                let status = vol.appendingPathComponent("STATUS.TXT").path
-                guard runIsolated(#"test -f "$1" && test -f "$2""#,
-                                  [leds, status], timeout: ioTimeout) == .ok else { continue }
+                let leds = vol.appendingPathComponent("LEDS.LED").path
+                let seed = vol.appendingPathComponent("INIT.LED").path
+                // One child does both jobs: prove LEDS.LED is really there (so a
+                // same-named user volume is never written to), then print INIT.LED,
+                // whose per-index startup fill tells us how many LEDs this unit has.
+                let (result, text) = runIsolatedCapturing(
+                    #"test -f "$1" || exit 1; cat "$2" 2>/dev/null; exit 0"#,
+                    [leds, seed], timeout: ioTimeout)
+                guard result == .ok else { continue }
+                if let text, let fromInit = ledCountFromInit(text) { count = fromInit }
             }
             found.append(Device(volumeURL: vol, name: name, ledCount: count))
         }
         return found.sorted { $0.name < $1.name }
     }
 
-    private func applyScan(_ found: [Device]) {
+    private func applyScan(_ scanned: [Device]) {
+        // INIT.LED is where the LED count comes from, and we also *write* INIT.LED
+        // ("save as power-on default"). A user program addressing fewer LEDs than
+        // the strip has would otherwise shrink the count and leave real LEDs dark,
+        // so a count learned for a volume is a floor for the rest of the run.
+        let found = scanned.map { device -> Device in
+            let best = max(device.ledCount, highestLEDCount[device.id] ?? 0)
+            highestLEDCount[device.id] = best
+            return best == device.ledCount
+                ? device
+                : Device(volumeURL: device.volumeURL, name: device.name, ledCount: best)
+        }
         let changed = found != devices
         devices = found
         if !found.isEmpty { everHadDevice = true }
@@ -376,7 +466,7 @@ final class DeviceManager: ObservableObject {
 
     // MARK: - Writing LED programs
 
-    /// Validate and write a program to the selected device's LEDS.TXT.
+    /// Validate and write a program to the selected device's LEDS.LED.
     @discardableResult
     private func deliver(_ program: String, kind: WriteKind = .leds) -> LEDProgram.Validation {
         let validation = LEDProgram.validate(program)
@@ -406,44 +496,60 @@ final class DeviceManager: ObservableObject {
         if kind == .leds || kind == .liveLeds { lastUserProgram = program }   // restore-after-sleep
         lastWrittenLEDS = program   // for self-heal after a device reset
         let ledsURL = device.ledsURL
-        let text = program + "\n"
+        let text = LEDProgram.wireText(program)
         enqueueIO(kind: kind, volume: device.volumeURL.path) {
             DeviceManager.performWrite(text, to: ledsURL)
         }
         return validation
     }
 
-    /// After a keepalive: if the device reset itself (LEDS.TXT reverted to its
-    /// default comment-only file), re-apply the last program so the LEDs return
-    /// without user action. Reads are gentle; only re-writes when actually reset.
-    private func healIfReset() {
+    /// After a keepalive: if the controller power-cycled, re-apply the last program
+    /// so the LEDs come back without user action.
+    ///
+    /// Detection is a **`uptime_ms` regression in STATUS.TXT**, not a look at
+    /// LEDS.LED. The firmware plays INIT.LED on power-up but never rewrites
+    /// LEDS.LED — measured on a real unit, LEDS.LED's mtime stayed a month stale
+    /// across power cycles (and across a physical re-seat), while `uptime_ms` reset
+    /// to ~1000. The volume also stays mounted throughout, so neither file content
+    /// nor mount events can see the restart. STATUS.TXT is cached by the host for
+    /// ~5s, which is irrelevant at a 60s beat.
+    private func healIfRestarted() {
         guard let device = selectedDevice, let intended = lastWrittenLEDS,
               !stuckVolumes.contains(device.volumeURL.path),
               !inFlightVolumes.contains(device.volumeURL.path) else { return }
-        let url = device.ledsURL
+        let url = device.statusURL
         let vol = device.volumeURL.path
+        let previous = lastUptimeMs[vol]
         inFlightVolumes.insert(vol)
         ioQueue.async { [weak self] in
             let (result, text) = DeviceManager.readContents(url)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.inFlightVolumes.remove(vol)
-                guard result == .ok, let text else {
+                guard result == .ok, let text, let uptime = DeviceManager.uptimeMs(text) else {
                     if result == .stuck { self.stuckVolumes.insert(vol) }
                     return
                 }
-                // Reset signature: reverted to the firmware default comment file,
-                // and no longer contains the program we wrote.
-                let firstLine = intended.split(separator: "\n").first.map(String.init) ?? intended
-                let looksReset = !text.contains(firstLine)
-                    && (text.contains("# sdled") || text.lowercased().contains("commands:"))
-                if looksReset {
-                    self.log(.repair, "Device reset — re-applying LEDs")
-                    self.lastInfoProgram = nil          // bypass info dedup
-                    _ = self.deliver(intended, kind: .info)  // silent re-apply
-                }
+                self.lastUptimeMs[vol] = uptime
+                // First reading this run is a baseline, not a restart.
+                guard let previous, uptime < previous else { return }
+                self.log(.repair, "Device restarted — re-applying LEDs")
+                self.lastInfoProgram = nil          // bypass info dedup
+                _ = self.deliver(intended, kind: .info)  // silent re-apply
             }
         }
+    }
+
+    /// `uptime_ms` from a STATUS.TXT body. The file is one `key value` per line,
+    /// NUL-padded to 1024 bytes — the padding is why this parses line by line and
+    /// trims rather than scanning the whole blob.
+    nonisolated static func uptimeMs(_ statusText: String) -> Int? {
+        for raw in statusText.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\0").union(.whitespaces))
+            guard line.hasPrefix("uptime_ms ") else { continue }
+            return Int(line.dropFirst("uptime_ms ".count).trimmingCharacters(in: .whitespaces))
+        }
+        return nil
     }
 
     /// A manual program (color/preset/raw). Takes over from Info mode and writes
@@ -568,17 +674,17 @@ final class DeviceManager: ObservableObject {
         tickTimer = t
     }
 
-    /// Keep every connected device alive by **writing** a timestamp to
-    /// KEEPALIVE.TXT (a dedicated file the firmware never parses, so the LED
-    /// animation isn't disturbed). A write is more "activity" than a read; runs
-    /// every 60s. On success it triggers a self-heal check (re-apply the LED
-    /// program if the device reset and reverted LEDS.TXT to default).
+    /// Keep every connected device alive by **touching** its `keepalive` file — a
+    /// dedicated marker the firmware never parses, so the LED animation isn't
+    /// disturbed. The MacBook SD reader powers the card down after ~3 minutes of
+    /// inactivity, so this runs every 60s. On success it triggers a self-heal check
+    /// (re-apply the LED program if the device reset and reverted LEDS.LED to the
+    /// firmware's power-on program).
     func beat() {
-        let stamp = ISO8601DateFormatter().string(from: Date())
         for device in devices {
             let url = device.keepAliveURL
             enqueueIO(kind: .keepalive, volume: device.volumeURL.path) {
-                DeviceManager.performWrite("sdrgb keepalive \(stamp)\n", to: url)
+                DeviceManager.performTouch(url)
             }
         }
         nextHeartbeat = Date().addingTimeInterval(Self.heartbeatInterval)
@@ -632,7 +738,7 @@ final class DeviceManager: ObservableObject {
             case .keepalive:
                 lastHeartbeat = Date(); lastHeartbeatOK = true
                 log(.keepalive, "Kept alive")
-                healIfReset()   // volume slot is now free
+                healIfRestarted()   // volume slot is now free
             }
         }
     }
@@ -658,7 +764,7 @@ final class DeviceManager: ObservableObject {
 
     // MARK: - Reading the live program
 
-    /// Read the program currently on the selected device's LEDS.TXT into
+    /// Read the program currently on the selected device's LEDS.LED into
     /// `currentProgram`, via an isolated child (single-flight, respects stuck).
     func loadCurrentProgram() {
         guard let device = selectedDevice else {
@@ -827,7 +933,7 @@ final class DeviceManager: ObservableObject {
     /// provenance xattr, and remove any AppleDouble `._` companion.
     nonisolated static func performWrite(_ text: String, to url: URL) -> IOResult {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("sdrgb-\(UUID().uuidString).txt")
+            .appendingPathComponent("sidepulse-\(UUID().uuidString).led")
         guard let data = text.data(using: .utf8), (try? data.write(to: tmp)) != nil else {
             return .failed
         }
@@ -844,30 +950,54 @@ final class DeviceManager: ObservableObject {
         return result
     }
 
-    /// Read a few bytes of `url` via an isolated child — the gentle keepalive.
-    nonisolated static func performRead(_ url: URL) -> IOResult {
-        runIsolated(#"head -c 64 "$1" > /dev/null 2>&1"#, [url.path], timeout: ioTimeout)
+    /// Touch `url` via an isolated child — the keepalive. Also clears the
+    /// AppleDouble `._` companion macOS leaves beside it on a FAT volume.
+    ///
+    /// The redirect comes first and deliberately: a bare `touch` on an existing
+    /// file can be satisfied from the VFS cache without ever reaching the card,
+    /// and `finishIO` turns this exit status into `lastHeartbeatOK`, the heart UI
+    /// and the restart check — a keepalive that reports success without touching
+    /// the device is the worst lie this app could tell. `: >` is a real
+    /// `open(O_TRUNC)` that fails loudly if the volume went away, creates the file
+    /// on a unit that lacks it, and still honours the vendor's zero-byte contract.
+    nonisolated static func performTouch(_ url: URL) -> IOResult {
+        let script = #"""
+        : > "$1" || exit 1
+        /usr/bin/touch "$1" || exit 1
+        xattr -c "$1" 2>/dev/null
+        rm -f "$(dirname "$1")/._$(basename "$1")" 2>/dev/null
+        exit 0
+        """#
+        return runIsolated(script, [url.path], timeout: ioTimeout)
     }
 
     /// Read the full (tiny) contents of `url` via an isolated child, capturing
     /// stdout. Returns `.stuck` if it hangs (the child is abandoned, contained).
     nonisolated static func readContents(_ url: URL) -> (IOResult, String?) {
+        runIsolatedCapturing(#"cat "$1""#, [url.path], timeout: ioTimeout)
+    }
+
+    /// `runIsolated`, but captures the child's stdout. Same containment: a wedged
+    /// device hangs the child, never us.
+    nonisolated static func runIsolatedCapturing(_ script: String, _ args: [String],
+                                                 timeout: TimeInterval) -> (IOResult, String?) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/sh")
-        proc.arguments = ["-c", #"cat "$1""#, "sh", url.path]
+        proc.arguments = ["-c", script, "sh"] + args
         let outPipe = Pipe()
         proc.standardOutput = outPipe
         proc.standardError = FileHandle.nullDevice
         let done = DispatchSemaphore(value: 0)
         proc.terminationHandler = { _ in done.signal() }
         do { try proc.run() } catch { return (.failed, nil) }
-        if done.wait(timeout: .now() + ioTimeout) == .timedOut {
+        if done.wait(timeout: .now() + timeout) == .timedOut {
             proc.terminate()
             return (.stuck, nil)
         }
         guard proc.terminationStatus == 0 else { return (.failed, nil) }
-        // The file is ≤512 B, well under the pipe buffer, so the child has
-        // already exited; reading to EOF returns promptly.
+        // Every file we read this way is ~1 KB at most — far under the pipe
+        // buffer — so the child has already exited and reading to EOF returns
+        // promptly rather than deadlocking on a full pipe.
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         return (.ok, String(data: data, encoding: .utf8) ?? "")
     }

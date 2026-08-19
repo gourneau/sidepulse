@@ -532,8 +532,8 @@ struct ContentView: View {
 
     private var advancedTab: some View {
         let validation = LEDProgram.validate(rawText)
-        let bytes = rawText.utf8.count
-        let lines = rawText.split(separator: "\n", omittingEmptySubsequences: false).count
+        // One shared count, so the label can never disagree with `validate`.
+        let (bytes, lines) = LEDProgram.stats(rawText)
         let busy = device.isWriting(device.selectedDevice)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {

@@ -1,13 +1,16 @@
 import SwiftUI
 
-/// Builds and validates `LEDS.TXT` DSL programs for the sdstatusbar controller.
+/// Builds and validates `LEDS.LED` DSL programs for the SidePulse controller.
 ///
-/// The controller accepts at most 512 bytes and at most 10 physical lines.
-/// A parse error makes the device blink red 6×, so every program we emit is
-/// validated against those limits before it ever reaches the card.
+/// The controller accepts at most 512 bytes, at most 20 physical lines, and
+/// durations/delays up to 65535 ms. A parse error makes the device blink red 6×,
+/// so every program we emit is validated against those limits before it ever
+/// reaches the card.
 enum LEDProgram {
     static let maxBytes = 512
-    static let maxLines = 10
+    static let maxLines = 20
+    /// Longest duration or delay the controller accepts, in milliseconds.
+    static let maxDurationMs = 65535
 
     // MARK: - Builders
 
@@ -75,8 +78,11 @@ enum LEDProgram {
     /// Map a 0…1 speed to a millisecond duration (faster speed → shorter).
     static func frameMs(_ speed: Double, slow: Int, fast: Int) -> Int {
         let s = min(1, max(0, speed))
-        return Int((Double(slow) + (Double(fast) - Double(slow)) * s).rounded())
+        return clampMs(Int((Double(slow) + (Double(fast) - Double(slow)) * s).rounded()))
     }
+
+    /// Hold a duration/delay inside what the controller can represent.
+    static func clampMs(_ ms: Int) -> Int { min(maxDurationMs, max(0, ms)) }
 
     /// Prepend a `brightness` line unless it's full (255 = controller default).
     static func withBrightness(_ program: String, _ brightness: Int) -> String {
@@ -151,7 +157,7 @@ enum LEDProgram {
         if v > 0 { lit = max(1, lit) }
         lit = min(lit, n)
         guard lit > 0 else { return off() }
-        let segs = (0..<lit).map { "\($0):\(hex) \(durationMs)ms pulse" }
+        let segs = (0..<lit).map { "\($0):\(hex) \(clampMs(durationMs))ms pulse" }
         return "off\n" + segs.joined(separator: "; ") + "\nrepeat"
     }
 
@@ -172,6 +178,7 @@ enum LEDProgram {
         case ok
         case tooManyBytes(Int)
         case tooManyLines(Int)
+        case durationTooLong(Int)
 
         var isValid: Bool { self == .ok }
         var message: String? {
@@ -179,17 +186,61 @@ enum LEDProgram {
             case .ok: return nil
             case .tooManyBytes(let n): return "Too large: \(n) bytes (max \(maxBytes))."
             case .tooManyLines(let n): return "Too many lines: \(n) (max \(maxLines))."
+            case .durationTooLong(let n): return "Duration too long: \(n) ms (max \(maxDurationMs))."
             }
         }
     }
 
+    /// The exact bytes that land on the device: the program with exactly one
+    /// trailing newline. Validation and the UI counter both measure this, so what
+    /// we count is what the controller parses.
+    static func wireText(_ program: String) -> String {
+        var text = program
+        while text.hasSuffix("\n") { text.removeLast() }
+        return text + "\n"
+    }
+
+    /// Byte and physical-line cost of `program` as it will actually be written.
+    static func stats(_ program: String) -> (bytes: Int, lines: Int) {
+        let text = wireText(program)
+        // The trailing newline terminates the last line; it doesn't start a new one.
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).count - 1
+        return (text.utf8.count, max(1, lines))
+    }
+
     static func validate(_ program: String) -> Validation {
-        let bytes = program.utf8.count
+        let (bytes, lines) = stats(program)
         if bytes > maxBytes { return .tooManyBytes(bytes) }
-        // "physical lines" = literal lines in the file.
-        let lineCount = program.split(separator: "\n", omittingEmptySubsequences: false).count
-        if lineCount > maxLines { return .tooManyLines(lineCount) }
+        if lines > maxLines { return .tooManyLines(lines) }
+        if let longest = longestDurationMs(program), longest > maxDurationMs {
+            return .durationTooLong(longest)
+        }
         return .ok
+    }
+
+    /// The largest duration/delay token in `program`, in milliseconds — `nil` when
+    /// the program contains none. Used to catch a hand-typed `120s` in the DSL tab
+    /// before the controller rejects the whole program with a red blink.
+    static func longestDurationMs(_ program: String) -> Int? {
+        var longest: Int?
+        for raw in program.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix(";") || line.hasPrefix("//") || line.hasPrefix("# ") { continue }
+            for token in line.split(whereSeparator: { $0 == " " || $0 == ";" }) {
+                guard let ms = durationMs(String(token)) else { continue }
+                longest = max(longest ?? 0, ms)
+            }
+        }
+        return longest
+    }
+
+    /// `330ms`, `2s`, `0.33s` → milliseconds. Anything else → `nil`.
+    static func durationMs(_ token: String) -> Int? {
+        if token.hasSuffix("ms") { return Int(token.dropLast(2)) }
+        if token.hasSuffix("s"), let seconds = Double(token.dropLast()) {
+            return Int((seconds * 1000).rounded())
+        }
+        return nil
     }
 
     // MARK: - Color helpers
