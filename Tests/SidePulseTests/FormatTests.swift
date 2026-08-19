@@ -240,6 +240,41 @@ final class FormatTests: XCTestCase {
             LEDProgram.pulseBar(hex: "#ffffff", value: 1, ledCount: 8, durationMs: 999_999)).isValid)
     }
 
+    // MARK: Crash regressions
+
+    /// `Int(Double)` traps on non-finite or out-of-Int64 values, and this runs on
+    /// every keystroke in the DSL editor — typing `1e999s` took the app down.
+    func testOverflowingDurationTokensDoNotTrap() {
+        for token in ["1e999s", "1e308s", "9999999999999999999999s", "-1e999s", "nans", "infs"] {
+            _ = LEDProgram.durationMs(token)              // must not trap
+            _ = LEDProgram.validate("#ff00ff \(token)")   // nor through validate
+        }
+        XCTAssertNil(LEDProgram.durationMs("1e999s"))
+        XCTAssertNil(LEDProgram.durationMs("1e308s"))
+    }
+
+    func testNegativeDurationsAreRejectedNotAccepted() {
+        XCTAssertNil(LEDProgram.durationMs("-5ms"))
+        XCTAssertNil(LEDProgram.durationMs("-2s"))
+    }
+
+    /// Swift treats "\r\n" as one Character that isn't equal to "\n", so a pasted
+    /// CRLF program used to measure as a single line and skip duration checks.
+    func testCRLFIsNormalizedBeforeMeasuring() {
+        let crlf = Array(repeating: "off", count: 25).joined(separator: "\r\n")
+        XCTAssertEqual(LEDProgram.stats(crlf).lines, 25)
+        XCTAssertEqual(LEDProgram.validate(crlf), .tooManyLines(25))
+        XCTAssertFalse(LEDProgram.wireText(crlf).contains("\r"))
+        XCTAssertEqual(LEDProgram.validate("#ff00ff 120s pulse\r\noff"), .durationTooLong(120_000))
+        XCTAssertEqual(DeviceManager.ledCountFromInit("0:#141414\r\n7:#141414"), 8)
+    }
+
+    /// A derived count sizes UI arrays, so it must be bounded.
+    func testDerivedLEDCountIsBounded() {
+        XCTAssertEqual(DeviceManager.ledCountFromInit("9999:#ffffff"), DeviceManager.maxLEDCount)
+        XCTAssertEqual(DeviceManager.ledCountFromInit("0:#ffffff"), 2)
+    }
+
     // MARK: Sleep / wake
 
     /// The app must not switch off LEDs it cannot switch back on. With nothing

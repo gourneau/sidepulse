@@ -33,6 +33,22 @@ struct ContentView: View {
 
     private var ledCount: Int { device.selectedDevice?.ledCount ?? 8 }
 
+    /// `perLEDColors` starts at 8 and only grows through `bindingForLED`, while
+    /// `ledCount` is data derived from the device. Every read of the array has to go
+    /// through here or a device reporting more than 8 LEDs traps on the grid.
+    private func ledColor(_ i: Int) -> Color {
+        i < perLEDColors.count ? perLEDColors[i] : .white
+    }
+
+    /// Size the colour array to the connected strip. Called when the selection
+    /// changes, so the grid and the emitted program always agree.
+    private func fitPerLEDColors() {
+        if perLEDColors.count < ledCount {
+            perLEDColors.append(contentsOf:
+                Array(repeating: .white, count: ledCount - perLEDColors.count))
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -64,6 +80,7 @@ struct ContentView: View {
         .onChange(of: perLEDColors) { _ in if tab == .perLED { liveSend() } }
         .onChange(of: brightness) { _ in liveSend() }
         .onChange(of: device.selectedID) { _ in
+            fitPerLEDColors()
             if selectedLED >= ledCount { selectedLED = 0 }
             if tab == .advanced { reloadProgram() }
         }
@@ -183,7 +200,7 @@ struct ContentView: View {
             device.sendLive(LEDProgram.solid(color: color, brightness: Int(brightness)))
         case .perLED:
             activePreset = nil
-            let colors = (0..<ledCount).map { Optional(perLEDColors[$0]) }
+            let colors = (0..<ledCount).map { Optional(ledColor($0)) }
             device.sendLive(LEDProgram.perLED(colors, brightness: Int(brightness)))
         case .presets:
             // Brightness/speed/animated keep the same preset active.
@@ -382,7 +399,7 @@ struct ContentView: View {
                 ForEach(0..<ledCount, id: \.self) { i in
                     Button { selectedLED = i } label: {
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(perLEDColors[i])
+                            .fill(ledColor(i))
                             .frame(height: 28)
                             .overlay(RoundedRectangle(cornerRadius: 6)
                                 .stroke(selectedLED == i ? Color.accentColor : Color.gray.opacity(0.4),
@@ -581,9 +598,13 @@ struct ContentView: View {
                 .frame(height: 120)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
             HStack {
-                Text("\(bytes)/\(LEDProgram.maxBytes) bytes · \(lines)/\(LEDProgram.maxLines) lines")
+                // The counter can only express the byte/line limits; a bad duration
+                // would otherwise just grey out Send with no reason given.
+                Text(validation.message
+                     ?? "\(bytes)/\(LEDProgram.maxBytes) bytes · \(lines)/\(LEDProgram.maxLines) lines")
                     .font(.caption2)
                     .foregroundStyle(validation.isValid ? Color.secondary : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 if busy { Text("Writing…").font(.caption2).foregroundStyle(.secondary) }
                 Button("Set as power-on") { device.saveAsStartup(rawText) }
