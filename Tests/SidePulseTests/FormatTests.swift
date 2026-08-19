@@ -306,6 +306,22 @@ final class FormatTests: XCTestCase {
                        LEDProgram.wireText("off\r\n#ff0000 1s pulse\r\nrepeat"))
     }
 
+    /// After a power cycle macOS can serve a stale cached directory-entry size, so
+    /// `cat` returns a truncation of the real file. That must not be mistaken for a
+    /// rival tool, or the app would badge itself as contested every restart.
+    func testClippedReadsAreNotMistakenForARivalWriter() {
+        let ours = "#ff0000 #ffbf00 #80ff00 #00ff40\nroll 2s linear\nrepeat"
+        XCTAssertTrue(DeviceManager.looksClipped(onDevice: "#ff0000 #ffbf00 #80ff", ours: ours))
+        XCTAssertTrue(DeviceManager.looksClipped(onDevice: "// s", ours: "// startup fill\noff"))
+        // A genuinely different program is not a truncation.
+        XCTAssertFalse(DeviceManager.looksClipped(onDevice: "off\n0:#00ff00", ours: ours))
+        // Nor is identical text, or an empty read.
+        XCTAssertFalse(DeviceManager.looksClipped(onDevice: ours, ours: ours))
+        XCTAssertFalse(DeviceManager.looksClipped(onDevice: "", ours: ours))
+        // Longer than ours is someone else writing, not clipping.
+        XCTAssertFalse(DeviceManager.looksClipped(onDevice: ours + "\nmore", ours: ours))
+    }
+
     // MARK: Spec rendering
 
     /// The spec's preamble uses four-space-indented shell examples. Before this,

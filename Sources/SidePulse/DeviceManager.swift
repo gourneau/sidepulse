@@ -347,6 +347,7 @@ final class DeviceManager: ObservableObject {
             guard observerMode != oldValue else { return }
             UserDefaults.standard.set(observerMode, forKey: "observerMode")
             if observerMode {
+                clearContention()   // we've stopped pulling; there is no rope
                 setStatus(.info, "Observer mode on — the app won't write to the device.")
             } else {
                 setStatus(.info, "Observer mode off — the app can write again.")
@@ -363,6 +364,49 @@ final class DeviceManager: ObservableObject {
     /// True when the last read of LEDS.LED didn't match what we last wrote, i.e.
     /// something else is driving this device.
     @Published private(set) var programChangedExternally = false
+
+    /// True when we and something else are both writing LEDS.LED — the LEDs will
+    /// flicker between two programs and neither side wins. Needs repeated evidence
+    /// (see `noteContention`), because a single mismatch is far more likely to be a
+    /// clipped read or a device restart than a rival writer.
+    @Published private(set) var contended = false
+    /// When we last found the device holding something other than what we wrote.
+    private var contentionSeen: [Date] = []
+    /// How long a contention observation counts for.
+    private static let contentionWindow: TimeInterval = 300
+    /// Observations needed inside that window before we say so.
+    private static let contentionThreshold = 2
+
+    /// Record that the device was holding someone else's program. Returns whether
+    /// that is now enough evidence to call it contention.
+    @discardableResult
+    private func noteContention() -> Bool {
+        let now = Date()
+        contentionSeen.append(now)
+        contentionSeen.removeAll { now.timeIntervalSince($0) > Self.contentionWindow }
+        let isContended = contentionSeen.count >= Self.contentionThreshold
+        if isContended && !contended {
+            log(.warning, "Another tool is writing to this device too")
+        }
+        contended = isContended
+        return isContended
+    }
+
+    /// Called when the device holds exactly what we wrote — the tug-of-war is over.
+    private func clearContention() {
+        contentionSeen.removeAll()
+        if contended { contended = false }
+    }
+
+    /// Whether a read that differs from what we wrote is just the known clipped-read
+    /// artifact — macOS serving a stale cached directory-entry size after the
+    /// firmware rewrote the file, so `cat` returns a truncation of the real content.
+    /// A rival writer produces different text; clipping produces a prefix.
+    nonisolated static func looksClipped(onDevice: String, ours: String) -> Bool {
+        let read = onDevice.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wrote = ours.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !read.isEmpty && read.count < wrote.count && wrote.hasPrefix(read)
+    }
 
     /// Auto-try the repair once, ~30s after the device looks wedged/disconnected.
     @Published var autoRepair = true
@@ -675,12 +719,19 @@ final class DeviceManager: ObservableObject {
         // gear-menu firmware readout, and it establishes the uptime baseline that
         // a later restart is measured against.
         let intended = lastWrittenLEDS
-        let url = device.statusURL
+        let statusPath = device.statusURL.path
+        let ledsPath = device.ledsURL.path
         let vol = device.volumeURL.path
         let previous = lastUptimeMs[vol]
+        let watchingForRivals = !observerMode && intended != nil
         inFlightVolumes.insert(vol)
         ioQueue.async { [weak self] in
-            let (result, text) = DeviceManager.readContents(url)
+            // Both files in ONE bounded child: this already runs every beat for the
+            // restart check, and LEDS.LED costs nothing extra here while a separate
+            // read would double the device I/O and need its own single-flight slot.
+            let (result, text) = DeviceManager.runIsolatedCapturing(
+                #"cat "$1"; printf '\n@@SIDEPULSE@@\n'; cat "$2" 2>/dev/null"#,
+                [statusPath, ledsPath], timeout: DeviceManager.ioTimeout)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.inFlightVolumes.remove(vol)
@@ -688,14 +739,29 @@ final class DeviceManager: ObservableObject {
                     if result == .stuck { self.stuckVolumes.insert(vol) }
                     return
                 }
-                // One read serves both the restart check and the firmware readout.
-                let status = DeviceStatus(text)
+                let parts = text.components(separatedBy: "@@SIDEPULSE@@")
+                // One read serves the restart check, the firmware readout, and the
+                // "is anything else writing to this device?" check.
+                let status = DeviceStatus(parts[0])
                 if !status.isEmpty { self.deviceStatus = status }
                 guard let uptime = status.uptimeMs else { return }
                 self.lastUptimeMs[vol] = uptime
                 // First reading this run is a baseline, not a restart.
-                guard let previous, uptime < previous else { return }
-                guard let intended else { return }   // restarted, but nothing of ours to restore
+                let restarted = previous.map { uptime < $0 } ?? false
+
+                // A restart replays INIT.LED, which is the firmware overwriting us,
+                // not a rival tool — so only judge contention on a settled device.
+                if watchingForRivals, !restarted, let intended, parts.count > 1 {
+                    let onDevice = parts[1]
+                    if LEDProgram.wireText(onDevice) == LEDProgram.wireText(intended) {
+                        self.clearContention()
+                    } else if !DeviceManager.looksClipped(onDevice: onDevice, ours: intended) {
+                        self.noteContention()
+                    }
+                }
+
+                guard restarted else { return }
+                guard let intended else { return }   // restarted, nothing of ours to restore
                 self.log(.repair, "Device restarted — re-applying LEDs")
                 self.lastInfoProgram = nil          // bypass info dedup
                 _ = self.deliver(intended, kind: .info)  // silent re-apply

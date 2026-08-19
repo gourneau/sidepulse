@@ -272,6 +272,15 @@ struct ContentView: View {
 
                 heartView
             }
+            if device.contended && !device.observerMode {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.left.arrow.right").foregroundStyle(.red)
+                    Text("Another tool is writing to this device too — you're overwriting each other.")
+                        .font(.caption2).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Stand back") { device.observerMode = true }.font(.caption2)
+                }
+            }
             if device.anyDeviceStuck {
                 Label("Device not responding — use Repair (gear menu) to recover.",
                       systemImage: "exclamationmark.triangle.fill")
@@ -292,6 +301,14 @@ struct ContentView: View {
                 .help("The app isn't writing to the device, so other tools can drive it freely. The keepalive still runs — it touches a separate file the firmware never reads.")
                 .pointingCursor()
                 .onTapGesture { device.observerMode = false }
+        } else if device.contended {
+            // The loudest state: we keep writing, something else keeps overwriting,
+            // and the LEDs flicker between two programs while neither side wins.
+            Label("Contested", systemImage: "arrow.left.arrow.right")
+                .font(.caption2.bold()).foregroundStyle(.red)
+                .help("Something else on this Mac keeps replacing what this app writes to LEDS.LED, and this app keeps replacing it back. The LEDs will flicker between the two. Click to stand back (Observer mode).")
+                .pointingCursor()
+                .onTapGesture { device.observerMode = true }
         } else if device.isWritingContinuously {
             Label("Writing", systemImage: "dot.radiowaves.left.and.right")
                 .font(.caption2).foregroundStyle(.orange)
