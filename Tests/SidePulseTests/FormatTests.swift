@@ -275,6 +275,49 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(DeviceManager.ledCountFromInit("0:#ffffff"), 2)
     }
 
+    // MARK: GPU utilization
+
+    /// The accelerator's registry properties are the only place this number lives and
+    /// they are not a public contract, so every shape has to degrade to "unknown"
+    /// rather than to a confident wrong answer.
+    func testGPUUtilizationIsReadOutOfAcceleratorProperties() {
+        XCTAssertEqual(SystemMetrics.utilization(
+            from: ["PerformanceStatistics": ["Device Utilization %": 25]]), 0.25)
+        // Seen as a double as well as an int.
+        XCTAssertEqual(SystemMetrics.utilization(
+            from: ["PerformanceStatistics": ["Device Utilization %": 99.0]]), 0.99)
+        XCTAssertEqual(SystemMetrics.utilization(
+            from: ["PerformanceStatistics": ["Device Utilization %": 0]]), 0)
+    }
+
+    func testGPUUtilizationIsNilWhenTheShapeIsUnfamiliar() {
+        XCTAssertNil(SystemMetrics.utilization(from: [:]))
+        XCTAssertNil(SystemMetrics.utilization(from: ["PerformanceStatistics": [:]]))
+        // The sibling stage counters are not the aggregate figure.
+        XCTAssertNil(SystemMetrics.utilization(
+            from: ["PerformanceStatistics": ["Renderer Utilization %": 40]]))
+        XCTAssertNil(SystemMetrics.utilization(
+            from: ["PerformanceStatistics": ["Device Utilization %": "25"]]))
+        XCTAssertNil(SystemMetrics.utilization(from: ["PerformanceStatistics": "not a dict"]))
+        XCTAssertNil(SystemMetrics.utilization(
+            from: ["PerformanceStatistics": ["Device Utilization %": Double.nan]]))
+    }
+
+    /// A bar is drawn from this, so a nonsense reading must not overfill the strip.
+    func testGPUUtilizationIsClamped() {
+        XCTAssertEqual(SystemMetrics.utilization(
+            from: ["PerformanceStatistics": ["Device Utilization %": 250]]), 1)
+        XCTAssertEqual(SystemMetrics.utilization(
+            from: ["PerformanceStatistics": ["Device Utilization %": -10]]), 0)
+    }
+
+    /// `gpu` is SF Symbols 5 (macOS 14) and the deployment target is 13, where asking
+    /// for a missing symbol renders an empty box.
+    func testSymbolFallsBackWhenTheSystemLacksIt() {
+        XCTAssertEqual(DeviceManager.symbol("cpu", fallback: "cube.transparent"), "cpu")
+        XCTAssertEqual(DeviceManager.symbol("definitely.not.a.symbol", fallback: "cpu"), "cpu")
+    }
+
     // MARK: Sleep / wake
 
     /// The app must not switch off LEDs it cannot switch back on. With nothing
