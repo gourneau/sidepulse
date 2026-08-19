@@ -19,6 +19,18 @@ struct Device: Identifiable, Equatable, Sendable {
     /// Touched once a minute so the SD reader doesn't power the card down.
     var keepAliveURL: URL { volumeURL.appendingPathComponent("keepalive") }
 
+    /// The model, inferred from the LED count. Shipping units mount as plain
+    /// "SidePulse", so the friendly name comes from the strip length rather than
+    /// the volume name. `name` stays the raw mount name — it's what diskutil,
+    /// Finder and every log line use, so it is never substituted.
+    var displayName: String {
+        switch ledCount {
+        case 2: return "SidePulse Dot"
+        case 8: return "SidePulse Pro"
+        default: return name
+        }
+    }
+
     /// LED count is part of identity: it's refined from INIT.LED by the verified
     /// background scan, and the UI must notice when it changes.
     static func == (a: Device, b: Device) -> Bool {

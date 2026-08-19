@@ -6,16 +6,18 @@ this before changing the I/O, signing, or device-detection code.
 ## The device
 
 - An LED controller that presents over USB as a tiny **mass-storage (FAT/msdos)
-  volume**. You drive the LEDs by writing a small DSL program to **`LEDS.TXT`**.
+  volume**. You drive the LEDs by writing a small DSL program to **`LEDS.LED`**.
 - Two variants, identified by **volume name**:
-  - `SDRGB` → **8 LEDs**
-  - `USBDOT` → **2 LEDs** (the USB stick; also exposes `FIRMWARE.BIN`)
+  - **SidePulse Pro** → **8 LEDs** (SD card slot)
+  - **SidePulse Dot** → **2 LEDs** (USB-C)
+  - Shipping units mount as plain `/Volumes/SidePulse`, with no model in the name.
   - The CH32X035 can present as **USB-MSC and an SD card at the same time** → more
     than one matching volume can be mounted at once.
-- **`LEDS.TXT` DSL** (see `LEDS_FORMAT.txt`): `#rrggbb`, `off`, positional lists,
+- **`LEDS.LED` DSL** (see `LEDS_FORMAT.md`): `#rrggbb`, `off`, positional lists,
   indexed `0:#ff00ee`, `brightness 0-255`, per-segment timing/easing
   (`330ms`/`0.33s`, `ease`, `cosine`, `pulse`…), `repeat`. **Hard limits: ≤512
-  bytes and ≤10 physical lines.** A parse error blinks all LEDs red 6× — so every
+  bytes and ≤20 physical lines**, durations ≤65535 ms. A parse error blinks all
+  LEDs red 6× — so every
   program the app emits is validated first (`LEDProgram.validate`).
 - Animations run **on the device firmware** (write the looping program once, it
   loops). So good animations cost ~zero ongoing I/O; only Info mode + live drags
@@ -44,8 +46,8 @@ relaunches it fresh, then remount:
 ```sh
 sudo pkill -9 -f com.apple.fskit.msdos
 sleep 1
-sudo diskutil unmount force /Volumes/SDRGB   # and USBDOT
-sudo diskutil mount SDRGB                     # and USBDOT
+sudo diskutil unmount force /Volumes/SidePulse
+sudo diskutil mount SidePulse
 ```
 
 This needs **root**. In the app it runs through the privileged helper (below), so
@@ -54,8 +56,8 @@ it's passwordless after the one-time approval. **Auto-repair** does this once,
 
 **Recovery is software-only — no replug/power-cycle needed.** After the driver is
 killed the card stays present as a raw disk (e.g. `diskutil list` shows
-`/dev/disk7  SDRGB`, unmounted). Just remount it: `diskutil mount disk7` (or
-`diskutil mount SDRGB`) brings `/Volumes/SDRGB` back. macOS has **no supported way
+`/dev/disk7  SidePulse`, unmounted). Just remount it: `diskutil mount disk7` (or
+`diskutil mount SidePulse`) brings `/Volumes/SidePulse` back. macOS has **no supported way
 to power-cycle the built-in SD reader slot** (its power is reader-managed; `eject`
 only logically removes it and needs a physical reinsert) — but you don't need to,
 because remount works. So Repair = kill `fskit.msdos` → `diskutil mount`.
@@ -80,7 +82,9 @@ sudo fs_usage -w                               # while it reproduces
 - **Detection matches by mount name only** (`knownLEDCounts`) — it never `stat`s
   *into* a volume, because statting a wedged FAT mount hangs. Listing `/Volumes`
   is safe.
-- **Keepalive is a READ** of `STATUS.TXT` every 2 min (not a write) — any host I/O
+- **Keepalive is a zero-byte write to `keepalive`** every 60s. It truncates before
+  touching: a bare `touch` on an existing file can be served from the VFS cache
+  without reaching the card, and the exit status drives `lastHeartbeatOK`. Host I/O
   keeps the link alive, and a read is far less likely to wedge the device than a
   write.
 - **Single instance** only (concurrent writers were a big part of early wedges).

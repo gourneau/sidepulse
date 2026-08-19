@@ -89,7 +89,7 @@ struct ContentView: View {
         var parts: [String] = []
         parts.append(device.devices.isEmpty
             ? "No device connected"
-            : "Connected: \(device.selectedDevice?.name ?? "device") (\(ledCount) LEDs)")
+            : "Connected: \(device.selectedDevice?.displayName ?? "device") (\(ledCount) LEDs)")
         if let st = device.status {
             parts.append("\(st.text) \(relative(st.date))")
         }
@@ -149,10 +149,10 @@ struct ContentView: View {
         // Become a regular app so the window can come to the front of the
         // menu-bar popover (SpecView reverts to accessory when it closes).
         NSApp.setActivationPolicy(.regular)
-        openWindow(id: "spec")
+        openWindow(id: SpecWindow.id)
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            if let w = NSApp.windows.first(where: { $0.title == "LEDS.TXT Format" }) {
+            if let w = NSApp.windows.first(where: { $0.title == SpecWindow.title }) {
                 w.makeKeyAndOrderFront(nil)
                 w.orderFrontRegardless()
             }
@@ -164,10 +164,10 @@ struct ContentView: View {
     private func openActivity(_ filter: ActivityFilter) {
         device.activityFilter = filter
         NSApp.setActivationPolicy(.regular)
-        openWindow(id: "activity")
+        openWindow(id: ActivityWindow.id)
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            if let w = NSApp.windows.first(where: { $0.title == "SDRGB Activity" }) {
+            if let w = NSApp.windows.first(where: { $0.title == ActivityWindow.title }) {
                 w.makeKeyAndOrderFront(nil)
                 w.orderFrontRegardless()
             }
@@ -241,14 +241,16 @@ struct ContentView: View {
         if device.devices.isEmpty {
             Text("No device").foregroundStyle(.secondary)
         } else if device.devices.count == 1, let d = device.selectedDevice {
-            Text("\(d.name) · \(d.ledCount) LEDs")
+            Text("\(d.displayName) · \(d.ledCount) LEDs").help("Mounted as \(d.name)")
         } else {
             Picker(selection: Binding(
                 get: { device.selectedID ?? device.selectedDevice?.id ?? "" },
                 set: { device.selectedID = $0 }
             )) {
                 ForEach(device.devices) { d in
-                    Text("\(d.name) · \(d.ledCount) LEDs").tag(d.id)
+                    // Raw mount name kept alongside, so the Finder correspondence
+                    // stays visible when more than one unit is attached.
+                    Text("\(d.displayName) · \(d.name) · \(d.ledCount) LEDs").tag(d.id)
                 }
             } label: { EmptyView() }
             .labelsHidden().pickerStyle(.menu).fixedSize()
@@ -537,7 +539,8 @@ struct ContentView: View {
         let busy = device.isWriting(device.selectedDevice)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text(device.selectedDevice.map { "Live LEDS.TXT on \($0.name)" } ?? "LEDS.TXT")
+                Text(device.selectedDevice.map { "Live \($0.ledsURL.lastPathComponent) on \($0.name)" }
+                     ?? "LEDS.LED")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button { reloadProgram() } label: { Label("Reload", systemImage: "arrow.clockwise") }

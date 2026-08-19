@@ -6,10 +6,16 @@ list, `LEARNINGS.md` / `TROUBLESHOOTING.md` for device + fskit-wedge debugging.
 ## What this is
 
 A macOS **menu-bar app** (SwiftPM, `LSUIElement`, `MenuBarExtra(.window)`) that
-controls "sdstatusbar" LED devices (a CH32X035 microcontroller emulating a
-USB/SD mass-storage volume: `SDRGB` = 8 LEDs, `USBDOT` = 2 LEDs). Its core job is
-a **keepalive** that writes `KEEPALIVE.TXT` to each device every minute so it
-stays alive, plus a UI to push colors/presets/Info-mode programs to `LEDS.TXT`.
+controls **SidePulse** LED devices (a CH32X035 microcontroller emulating a
+USB/SD mass-storage volume: SidePulse Pro = 8 LEDs in the SD slot, SidePulse Dot
+= 2 LEDs over USB-C). Its core job is a **keepalive** that touches `keepalive` on
+each device every minute so the SD reader doesn't power it down, plus a UI to
+push colors/presets/Info-mode programs to `LEDS.LED`.
+
+**Volume names:** shipping units mount as plain **`/Volumes/SidePulse`** — the
+vendor docs promise `SidePulsePro` / `SidePulseDot`, so all three stems are
+matched. Detection is an *exact* normalized-name match, never a prefix, because
+the name-only scan runs on the main thread and feeds `deliver()`, which writes.
 
 ## Targets (Package.swift)
 
@@ -66,14 +72,14 @@ not `openssl`.
 
 - **`com.apple.fskit.msdos`** (macOS's userspace FAT driver) wedges at ~100% CPU
   when the emulated device resets. Recovery without reboot: kill it
-  (`pkill -9 -f com.apple.fskit.msdos`) + `diskutil mount SDRGB/USBDOT`. The app
+  (`pkill -9 -f com.apple.fskit.msdos`) + `diskutil mount SidePulse`. The app
   does this via the root helper (`repair`) — passwordless after one-time Login
   Items approval. **Repair mounts by exact volume name only** — never parse
   `diskutil list` + `mountDisk` (it can force-mount an unrelated whole disk).
 - **Two distinct stuck states, one repair.** (1) the CPU wedge above; (2) the
   **"ghost card"**: the SD reader sees the card (`system_profiler
-  SPCardReaderDataType` shows Product Name `SDLED…`) but it never enumerates as a
-  block device — **absent from `diskutil list`/`/Volumes`, and no msdos process is
+  SPCardReaderDataType` shows Product Name `SPPulse`; older firmware said
+  `SDLED…`) but it never enumerates as a block device — **absent from `diskutil list`/`/Volumes`, and no msdos process is
   even running**. `repair` now handles both: it kills the whole fskit user-space
   stack (`com.apple.fskit.msdos` + `libexec/fskit_agent` + `fskit_helper`) to force
   macOS to re-probe the card, then retries `diskutil mount <name>` a few times as
@@ -88,15 +94,27 @@ not `openssl`.
   contained.
 - **Never stat *into* a device volume on the main thread** — it can hang on a
   wedged mount. `scanVolumes()` matches by mount name; `scanVolumes(verify: true)`
-  (background only) confirms `LEDS.TXT` + `STATUS.TXT` via a bounded isolated
-  child so a same-named user volume isn't scribbled with `LEDS.TXT`.
-- **Self-heal:** after a keepalive (and on wake), `healIfReset()` reads
-  `LEDS.TXT`; if it reverted to the firmware default it re-applies
-  `lastWrittenLEDS` silently. Root cause of "overnight LEDs off."
+  (background only) confirms `LEDS.LED` via a bounded isolated child — and reads
+  `INIT.LED` in the same child to derive the LED count — so a same-named user
+  volume isn't scribbled with `LEDS.LED`.
+- **Self-heal keys off `uptime_ms`, not file content.** The firmware plays
+  `INIT.LED` on power-up but **never rewrites `LEDS.LED`** — measured on a real
+  unit, `LEDS.LED`'s mtime stayed a month stale across power cycles *and* a
+  physical re-seat, while `uptime_ms` reset to ~1000. The volume stays mounted
+  throughout, so mount events can't see it either. `healIfRestarted()` reads
+  `STATUS.TXT` after each keepalive and re-applies `lastWrittenLEDS` when
+  `uptime_ms` goes backwards. Root cause of "overnight LEDs off."
+- **`STATUS.TXT`** is one `key value` per line, **NUL-padded** to 1024 bytes, and
+  the host caches it for ~5s (irrelevant at a 60s beat).
 - **Keep `DeviceManager` re-entrancy in mind:** `deliver()`'s no-device re-check
   updates selection in place (it must NOT call `applyScan`, which re-enters
   `beat()`/`showInfoFrame`); a background `rescan()` corrects it.
-- **`LEDS.TXT` DSL limits:** ≤512 bytes, ≤10 physical lines (`LEDProgram.validate`).
+- **`LEDS.LED` DSL limits:** ≤512 bytes, ≤20 physical lines, durations ≤65535 ms
+  (`LEDProgram.validate`). Measure with `LEDProgram.stats`, which counts the *wire*
+  form — `deliver()` appends the trailing newline after validation.
+- **`SpecText.swift` is generated** from `LEDS_FORMAT.md` by
+  `scripts/embed_spec.sh` (`--check` verifies sync). It must stay a **raw**
+  string literal: the spec's shell examples contain literal `\n`.
 - **Single instance** is enforced in `SDRGBApp.init` (concurrent writers wedge
   the device). `--unregister-login` removes the login item and quits without
   touching any device.

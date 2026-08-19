@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The in-app spec viewer reads a generated copy of LEDS_FORMAT.md. If the
+      # two drift, the app ships a stale DSL reference and nothing else notices.
+      - name: Check the embedded spec is in sync
+        run: scripts/embed_spec.sh --check
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      # CLAUDE.md asks for a warning-free build; the GitHub runners are stricter
+      # than a typical local toolchain, so fail here rather than in a release.
+      - name: Fail on warnings
+        run: |
+          rm -rf .build
+          swift build 2>&1 | tee build.log
+          if grep -q "warning:" build.log; then
+            echo "::error::build produced warnings"
+            grep "warning:" build.log
+            exit 1
+          fi

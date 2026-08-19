@@ -1,19 +1,19 @@
 # SDRGB
 
-A tiny macOS **menu-bar app** to control [sdstatusbar](https://github.com/unrelatedlabs/sdstatusbar)
+A tiny macOS **menu-bar app** to control [SidePulse](https://github.com/inteliwear/sidepulse)
 LED devices — and, most importantly, a **keepalive that touches each device every
 minute** so it stays alive.
 
 ## What it does
 
 - Lives in the menu bar (lightbulb icon), no dock icon.
-- **Keepalive**: every minute it **writes** a timestamp to `KEEPALIVE.TXT` on
+- **Keepalive**: every minute it **touches** `keepalive` on
   every connected device — a dedicated file the firmware never parses, so the LED
   animation is never disturbed. A write is more "activity" than a read, which the
   device's firmware needs to stay awake. Click the **heart** in the header to see
   the keepalive log (last 24h).
 - **Self-heal**: after each keepalive (and after the Mac wakes), if the device has
-  reset itself and reverted `LEDS.TXT` to its firmware default, the app silently
+  restarted (its `uptime_ms` went backwards), the app silently
   re-applies the last program — so the LEDs come back without any user action.
   This is the fix for "woke up and the LEDs were off."
 - **Activity log**: click the header **status dot** for the last 24h of events
@@ -21,7 +21,7 @@ minute** so it stays alive.
 - **Color** tab: an inline color editor (swatches + RGB sliders) + brightness.
   Updates **live** as you drag — no Apply button. Plus an Off button.
 - **Per-LED** tab: tap an LED to select it, then edit its color live (8 LEDs for
-  `SDRGB`, 2 for `USBDOT`).
+  SidePulse Pro, 2 for SidePulse Dot).
 - **Presets**: Rainbow (smooth flowing hue gradient), Breathe, Sparkle, White,
   Off. Animated presets have an **Animated** toggle and a **Speed** slider
   (Slow…Fast); plus a brightness slider. All re-apply live.
@@ -30,7 +30,7 @@ minute** so it stays alive.
   Memory (green). Enable several and it **cycles** between them; a **Time between
   modes** slider (2–30s) sets the cadence. Only writes when the displayed bar
   changes. Picking a color or preset takes back manual control.
-- **DSL** tab: shows the **actual `LEDS.TXT` currently on the device** (with a
+- **DSL** tab: shows the **actual `LEDS.LED` currently on the device** (with a
   **Reload** button) so you can see the running program and edit it. Live
   512-byte / 10-line validation, a **Format help** button with the full DSL
   reference, and a "Writing…" busy state.
@@ -69,20 +69,23 @@ contain that:
   only writes when the displayed bar changes.
 - **Single instance.** A second copy won't launch (concurrent writers were a big
   part of what wedged the device).
-- **Keepalive writes one small file** (`KEEPALIVE.TXT`, ~40 bytes) once a minute —
+- **Keepalive touches one zero-byte file** (`keepalive`) once a minute —
   bounded, single-flight, and isolated like every other write.
 
 Maintenance: `SDRGB.app/Contents/MacOS/SDRGB --unregister-login` removes the
 launch-at-login item without starting the app or touching any device.
 
 None of this can *fully* prevent a determined hardware/driver stall — the surest
-safety is to not run Info mode 24/7 and to use whichever connection (USB `USBDOT`
+safety is to not run Info mode 24/7 and to use whichever connection (USB-C Dot
 vs the SD slot) proves more stable.
 
 ## Device detection
 
-Any mounted volume containing both `LEDS.TXT` and `STATUS.TXT` is treated as a
-device. LED counts: `SDRGB` → 8, `USBDOT` → 2, anything else → 2. The CH32X035 can
+A mounted volume is treated as a device when its name matches `SidePulse`,
+`SidePulsePro` or `SidePulseDot` exactly (normalized) **and** it contains
+`LEDS.LED`. Shipping units mount as plain `SidePulse`, so the LED count is read
+from `INIT.LED` — the firmware seeds it with a per-index startup fill — falling
+back to the name, then to the 8-LED Pro layout. The CH32X035 can
 appear as both a USB-MSC volume and the SD card at once — both are detected, you
 pick which one colors go to, and the keepalive runs on all of them.
 

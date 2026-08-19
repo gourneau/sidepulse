@@ -29,6 +29,13 @@ let package = Package(
             name: "SDRGBHelper",
             dependencies: ["SDRGBShared", "XPCAuditToken"],
             path: "Sources/SDRGBHelper"
+        ),
+        // Pure-logic tests: volume matching, program measurement, and the parsers
+        // for the firmware's own files. Nothing here touches a device.
+        .testTarget(
+            name: "SDRGBTests",
+            dependencies: ["SDRGB"],
+            path: "Tests/SDRGBTests"
         )
     ]
 )
