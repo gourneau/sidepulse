@@ -15,11 +15,11 @@ enum SpecWindow {
 
 enum ActivityWindow {
     static let id = "activity"
-    static let title = "SDRGB Activity"
+    static let title = "SidePulse Activity"
 }
 
 @main
-struct SDRGBApp: App {
+struct SidePulseApp: App {
     @StateObject private var device = DeviceManager()
     @StateObject private var wake = WakeGuard.shared
 
@@ -37,7 +37,7 @@ struct SDRGBApp: App {
         }
         // Single-instance: never let two copies write to the same device at once
         // (concurrent writers were a big part of what wedged the device before).
-        let me = Bundle.main.bundleIdentifier ?? "com.gourneau.SDRGB"
+        let me = Bundle.main.bundleIdentifier ?? "com.gourneau.SidePulse"
         let others = NSRunningApplication
             .runningApplications(withBundleIdentifier: me)
             .filter { $0 != .current }

@@ -282,7 +282,7 @@ struct ContentView: View {
     /// Header gear menu for app-level settings (no longer at the bottom of tabs).
     private var settingsMenu: some View {
         Menu {
-            Text("SDRGB \(appVersion)")
+            Text("SidePulse \(appVersion)")
             // The firmware's own readout, from the STATUS.TXT the keepalive
             // already reads each beat — no extra device I/O to show it.
             if let status = device.deviceStatus {
@@ -309,7 +309,7 @@ struct ContentView: View {
             // alone, so a saved power-on default still comes back on next power-up.
             Toggle("Turn off LEDs when quitting", isOn: $device.ledsOffOnQuit)
             Divider()
-            Button("Quit SDRGB") { NSApplication.shared.terminate(nil) }
+            Button("Quit SidePulse") { NSApplication.shared.terminate(nil) }
         } label: {
             Image(systemName: "gearshape")
         }

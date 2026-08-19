@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import IOKit.pwr_mgt
 import ServiceManagement
-import SDRGBShared
+import SidePulseShared
 
 /// Keeps the Mac awake while the app runs.
 ///
@@ -35,7 +35,7 @@ final class WakeGuard: ObservableObject {
 
     private var assertionID = IOPMAssertionID(0)
     private var hasAssertion = false
-    nonisolated private static let sudoersPath = "/etc/sudoers.d/sdrgb-disablesleep"
+    nonisolated private static let sudoersPath = "/etc/sudoers.d/sidepulse-disablesleep"
 
     private let helperService = SMAppService.daemon(plistName: HelperConstants.plistName)
     private var connection: NSXPCConnection?
@@ -54,7 +54,7 @@ final class WakeGuard: ObservableObject {
         let ok = IOPMAssertionCreateWithName(
             kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),
-            "SDRGB keeping the Mac awake" as CFString,
+            "SidePulse keeping the Mac awake" as CFString,
             &assertionID)
         hasAssertion = (ok == kIOReturnSuccess)
     }
@@ -77,7 +77,7 @@ final class WakeGuard: ObservableObject {
             callHelper(enabled)                 // passwordless via XPC
         case .requiresApproval:
             lidClosedBusy = false
-            lidClosedError = "Approve “SDRGB” in System Settings → Login Items, then toggle again."
+            lidClosedError = "Approve “SidePulse” in System Settings → Login Items, then toggle again."
             SMAppService.openSystemSettingsLoginItems()
         default:
             sudoFallback(enabled)               // unsigned/dev build
@@ -138,7 +138,7 @@ final class WakeGuard: ObservableObject {
         let status = ensureHelperRegistered()
         if status == .requiresApproval {
             repairBusy = false
-            lidClosedError = "Approve “SDRGB” in System Settings → Login Items, then repair again."
+            lidClosedError = "Approve “SidePulse” in System Settings → Login Items, then repair again."
             SMAppService.openSystemSettingsLoginItems()
             completion()
             return
@@ -262,7 +262,7 @@ final class WakeGuard: ObservableObject {
         chmod 0440 "$f"
         /usr/sbin/visudo -cf "$f" >/dev/null 2>&1 || { rm -f "$f"; exit 1; }
         """
-        let tmp = NSTemporaryDirectory() + "sdrgb-setup-\(UUID().uuidString).sh"
+        let tmp = NSTemporaryDirectory() + "sidepulse-setup-\(UUID().uuidString).sh"
         guard (try? setup.write(toFile: tmp, atomically: true, encoding: .utf8)) != nil else {
             return .failed
         }

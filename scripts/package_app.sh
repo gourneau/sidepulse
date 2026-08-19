@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build SDRGB + its privileged helper, assemble a signed .app bundle.
+# Build SidePulse + its privileged helper, assemble a signed .app bundle.
 #
 # Signing identity: defaults to the Developer ID Application cert (needed for the
 # SMAppService privileged helper to register and for notarization). Override with
@@ -8,11 +8,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$ROOT/build/SDRGB.app"
+APP="$ROOT/build/SidePulse.app"
 CONFIG="${1:-release}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: Joshua Gourneau (8LL2JEMH4P)}"
 
-HELPER_LABEL="com.gourneau.SDRGB.helper"
+HELPER_LABEL="com.gourneau.SidePulse.helper"
 
 echo "==> swift build -c $CONFIG"
 swift build -c "$CONFIG" --package-path "$ROOT"
@@ -21,8 +21,8 @@ BIN="$(swift build -c "$CONFIG" --package-path "$ROOT" --show-bin-path)"
 echo "==> assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Library/LaunchDaemons"
-cp "$BIN/SDRGB" "$APP/Contents/MacOS/SDRGB"
-cp "$BIN/SDRGBHelper" "$APP/Contents/MacOS/SDRGBHelper"
+cp "$BIN/SidePulse" "$APP/Contents/MacOS/SidePulse"
+cp "$BIN/SidePulseHelper" "$APP/Contents/MacOS/SidePulseHelper"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
 # Stamp the version shown in the app (gear menu). release.sh passes APP_VERSION
@@ -42,7 +42,7 @@ cat > "$APP/Contents/Library/LaunchDaemons/$HELPER_LABEL.plist" <<PLIST
 	<key>Label</key>
 	<string>$HELPER_LABEL</string>
 	<key>BundleProgram</key>
-	<string>Contents/MacOS/SDRGBHelper</string>
+	<string>Contents/MacOS/SidePulseHelper</string>
 	<key>MachServices</key>
 	<dict>
 		<key>$HELPER_LABEL</key>
@@ -50,7 +50,7 @@ cat > "$APP/Contents/Library/LaunchDaemons/$HELPER_LABEL.plist" <<PLIST
 	</dict>
 	<key>AssociatedBundleIdentifiers</key>
 	<array>
-		<string>com.gourneau.SDRGB</string>
+		<string>com.gourneau.SidePulse</string>
 	</array>
 </dict>
 </plist>
@@ -63,7 +63,7 @@ if [ "$SIGN_IDENTITY" = "-" ]; then SIGN_FLAGS=(--force); fi
 
 echo "==> codesign helper ($SIGN_IDENTITY)"
 codesign "${SIGN_FLAGS[@]}" --identifier "$HELPER_LABEL" \
-    --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/SDRGBHelper"
+    --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/SidePulseHelper"
 
 echo "==> codesign app ($SIGN_IDENTITY)"
 codesign "${SIGN_FLAGS[@]}" --sign "$SIGN_IDENTITY" "$APP"

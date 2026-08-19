@@ -227,7 +227,7 @@ final class DeviceManager: ObservableObject {
     /// Schedules the (brief) work of launching the isolated I/O child process,
     /// off the main thread. The actual device I/O happens inside that child, not
     /// here — so a wedge can never block this queue for more than `ioTimeout`.
-    private let ioQueue = DispatchQueue(label: "com.gourneau.SDRGB.io", qos: .utility)
+    private let ioQueue = DispatchQueue(label: "com.gourneau.SidePulse.io", qos: .utility)
     /// `.leds` = a discrete manual program (flashes the status dot); `.liveLeds`
     /// = a live slider write (quiet, so dragging doesn't strobe); `.info` = an
     /// Info-mode frame (silent); `.initLeds` = the power-on program, written to

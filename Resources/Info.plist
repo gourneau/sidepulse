@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>SDRGB</string>
+	<string>SidePulse</string>
 	<key>CFBundleDisplayName</key>
-	<string>SDRGB</string>
+	<string>SidePulse</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.gourneau.SDRGB</string>
+	<string>com.gourneau.SidePulse</string>
 	<key>CFBundleExecutable</key>
-	<string>SDRGB</string>
+	<string>SidePulse</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -21,6 +21,6 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Controls sdstatusbar LED devices.</string>
+	<string>Controls SidePulse Pro and SidePulse Dot LED devices.</string>
 </dict>
 </plist>

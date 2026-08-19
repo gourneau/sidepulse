@@ -1,5 +1,5 @@
 import XCTest
-@testable import SDRGB
+@testable import SidePulse
 
 /// Covers the pure, device-independent logic behind the LEDS.LED migration: what
 /// counts as one of our volumes, how a program is measured before it is written,
@@ -30,7 +30,7 @@ final class FormatTests: XCTestCase {
         XCTAssertFalse(claims("Macintosh HD"))
         XCTAssertFalse(claims("Time Machine"))
         XCTAssertFalse(claims(""))
-        // Old firmware is no longer claimed at all.
+        // The pre-SidePulse volume names are no longer claimed at all.
         XCTAssertFalse(claims("SDRGB"))
         XCTAssertFalse(claims("USBDOT"))
     }
