@@ -82,8 +82,16 @@ spctl -a -vv -t exec "$APP" 2>&1 | grep -E "accepted|Notarized" || true
 echo "==> 4/5 zip stapled app"
 rm -f "$ZIP" "$NZIP"; ditto -c -k --keepParent "$APP" "$ZIP"
 
-echo "==> 5/5 tag + publish GitHub prerelease $TAG"
+# Only pre-release tags get flagged as prereleases. A stable tag published as a
+# prerelease makes /releases/latest return 404, which breaks Homebrew livecheck
+# and `brew audit --online` — all four earlier releases had this problem.
+case "$TAG" in
+  *beta*|*alpha*|*rc*|*-pre*) PRERELEASE=(--prerelease); KIND="prerelease" ;;
+  *)                          PRERELEASE=();            KIND="release" ;;
+esac
+
+echo "==> 5/5 tag + publish GitHub $KIND $TAG"
 git rev-parse "$TAG" >/dev/null 2>&1 || { git tag "$TAG"; git push origin "$TAG"; }
-gh release create "$TAG" --prerelease --title "SidePulse $TAG" --notes "$NOTES" "$ZIP"
+gh release create "$TAG" "${PRERELEASE[@]}" --title "SidePulse $TAG" --notes "$NOTES" "$ZIP"
 
 echo "==> done: https://github.com/gourneau/sidepulse/releases/tag/$TAG"

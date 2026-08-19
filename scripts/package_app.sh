@@ -31,6 +31,11 @@ APP_VERSION="${APP_VERSION:-$(git -C "$ROOT" describe --tags --always --dirty 2>
 APP_VERSION="${APP_VERSION#v}"   # strip leading v from tags like v0.1.0-beta.3
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" \
     "$APP/Contents/Info.plist" 2>/dev/null || true
+# Stamp the build version too. Info.plist ships it hardcoded at 1, and Homebrew's
+# `--cask --adopt` compares BOTH version keys against an already-installed copy,
+# so leaving it frozen makes adoption fail for anyone who installed by hand.
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" \
+    "$APP/Contents/Info.plist" 2>/dev/null || true
 echo "==> version $APP_VERSION"
 
 # LaunchDaemon plist for SMAppService (runs the helper as root, on demand).
