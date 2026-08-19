@@ -16,6 +16,14 @@ struct ContentView: View {
     @State private var rawText = ""
     @State private var didInitialLoad = false
     @State private var awaitingReload = false
+    /// Poll LEDS.LED while the DSL tab is open, so edits made by anything else on
+    /// the machine show up without pressing Reload.
+    @State private var autoReload = false
+    /// The text as last loaded from the device. While `rawText` still equals this,
+    /// the editor holds no unsaved work and auto-reload may replace it; once the
+    /// user types, it stops so their edit is never yanked out from under them.
+    @State private var loadedText = ""
+    @State private var lastReloadAt: Date?
     @State private var loginEnabled = LoginItem.isEnabled
     @State private var statusFlash = false
     @State private var heartBeating = false
@@ -85,7 +93,25 @@ struct ContentView: View {
             if tab == .advanced { reloadProgram() }
         }
         .onChange(of: device.currentProgram) { newValue in
-            if awaitingReload, let newValue { rawText = newValue; awaitingReload = false }
+            guard let newValue else { return }
+            if awaitingReload {
+                rawText = newValue
+                loadedText = newValue
+                awaitingReload = false
+                lastReloadAt = Date()
+                return
+            }
+            // An auto-reload landed. Only adopt it if the editor is untouched.
+            guard autoReload, newValue != loadedText else { return }
+            lastReloadAt = Date()
+            if rawText == loadedText { rawText = newValue }
+            loadedText = newValue
+        }
+        // Only fires while the popover is open and this tab is showing, so the
+        // polling stops the moment the user looks away.
+        .onReceive(Timer.publish(every: 2.5, on: .main, in: .common).autoconnect()) { _ in
+            guard autoReload, tab == .advanced, device.selectedDevice != nil else { return }
+            device.loadCurrentProgram()
         }
     }
 
@@ -232,6 +258,8 @@ struct ContentView: View {
 
                 Spacer()
 
+                sharingBadge
+
                 if device.devices.isEmpty {
                     Button { runRepair() } label: {
                         if wake.repairBusy { ProgressView().controlSize(.mini) }
@@ -250,6 +278,26 @@ struct ContentView: View {
                     .font(.caption2).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// Tells the user, without being asked, whether the app is currently writing to
+    /// the shared device on a timer — the state that collides with anything else
+    /// driving it — or deliberately standing back.
+    @ViewBuilder
+    private var sharingBadge: some View {
+        if device.observerMode {
+            Label("Observing", systemImage: "eye")
+                .font(.caption2).foregroundStyle(.blue)
+                .help("The app isn't writing to the device, so other tools can drive it freely. The keepalive still runs — it touches a separate file the firmware never reads.")
+                .pointingCursor()
+                .onTapGesture { device.observerMode = false }
+        } else if device.isWritingContinuously {
+            Label("Writing", systemImage: "dot.radiowaves.left.and.right")
+                .font(.caption2).foregroundStyle(.orange)
+                .help("Info mode rewrites LEDS.LED every \(Int(device.cycleInterval))s. If an AI agent, MCP server or script is also driving this device, you'll fight over it. Click to stop writing (Observer mode).")
+                .pointingCursor()
+                .onTapGesture { device.observerMode = true }
         }
     }
 
@@ -313,6 +361,8 @@ struct ContentView: View {
                 device.saveCurrentAsStartup()
             }
             .disabled(!device.canSaveStartup)
+            Divider()
+            Toggle("Observer mode — don't write to the device", isOn: $device.observerMode)
             Divider()
             Button("Reconnect / repair device") { runRepair() }
                 .disabled(wake.repairBusy)
@@ -568,6 +618,18 @@ struct ContentView: View {
                 Text("Cycling every \(Int(device.cycleInterval))s. Pick a color or preset to take back manual control.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if !device.observerMode {
+                    Label("This rewrites LEDS.LED continuously. If another tool is driving the device, turn on Observer mode.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if device.observerMode {
+                Label("Observer mode is on — modes won't reach the device.",
+                      systemImage: "eye")
+                    .font(.caption2).foregroundStyle(.blue)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -588,6 +650,10 @@ struct ContentView: View {
                 Button { reloadProgram() } label: { Label("Reload", systemImage: "arrow.clockwise") }
                     .buttonStyle(.borderless).font(.caption)
                     .disabled(device.selectedDevice == nil || busy)
+                Toggle("Auto", isOn: $autoReload)
+                    .toggleStyle(.checkbox).font(.caption)
+                    .disabled(device.selectedDevice == nil)
+                    .help("Re-read LEDS.LED every couple of seconds while this tab is open, so changes made by anything else on this Mac show up here. Your edits are never overwritten — it pauses as soon as you type.")
                 Button { openSpec() } label: {
                     Label("Format help", systemImage: "book")
                 }
@@ -607,6 +673,10 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 if busy { Text("Writing…").font(.caption2).foregroundStyle(.secondary) }
+                else if let detail = autoReloadDetail {
+                    Text(detail).font(.caption2).foregroundStyle(
+                        device.programChangedExternally ? Color.orange : Color.secondary)
+                }
                 Button("Set as power-on") { device.saveAsStartup(rawText) }
                     .disabled(!validation.isValid || busy || device.selectedDevice == nil)
                     .help("Write this to INIT.LED, the program the device replays every time it powers up.")
@@ -618,6 +688,15 @@ struct ContentView: View {
         .onAppear {
             if !didInitialLoad { didInitialLoad = true; reloadProgram() }
         }
+    }
+
+    /// What auto-reload is currently seeing: whether the file on the device still
+    /// matches what we wrote, and whether the editor is holding unsaved edits.
+    private var autoReloadDetail: String? {
+        guard autoReload else { return nil }
+        if rawText != loadedText { return "Paused — you have unsaved edits" }
+        if device.programChangedExternally { return "Changed by another tool" }
+        return lastReloadAt == nil ? "Watching…" : "In sync"
     }
 
     private var brightnessSlider: some View {

@@ -288,6 +288,24 @@ final class FormatTests: XCTestCase {
         XCTAssertFalse(DeviceManager.shouldSwitchOffOnSleep(enabled: false, hasRestorableProgram: false))
     }
 
+    // MARK: Sharing the device with other tools
+
+    /// Reading the device back has to survive whatever another tool wrote, so the
+    /// comparison that decides "someone else changed this" must be the same
+    /// normalization the writer uses — otherwise a trailing-newline difference
+    /// reads as an external edit forever.
+    func testExternalChangeComparisonIgnoresTrailingNewlineOnly() {
+        let ours = "off\n#ff0000 1s pulse\nrepeat"
+        XCTAssertEqual(LEDProgram.wireText(ours), LEDProgram.wireText(ours + "\n"))
+        XCTAssertEqual(LEDProgram.wireText(ours), LEDProgram.wireText(ours + "\n\n"))
+        // A real edit still reads as different.
+        XCTAssertNotEqual(LEDProgram.wireText(ours),
+                          LEDProgram.wireText("off\n#00ff00 1s pulse\nrepeat"))
+        // And CRLF from another tool is not mistaken for a change.
+        XCTAssertEqual(LEDProgram.wireText(ours),
+                       LEDProgram.wireText("off\r\n#ff0000 1s pulse\r\nrepeat"))
+    }
+
     // MARK: Spec rendering
 
     /// The spec's preamble uses four-space-indented shell examples. Before this,

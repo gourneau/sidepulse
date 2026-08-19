@@ -329,6 +329,41 @@ final class DeviceManager: ObservableObject {
     @Published var ledsOffOnSleep = true
     /// When true, switch the LEDs off as the app quits (no restore — it's gone).
     @Published var ledsOffOnQuit = false
+    /// When true the app makes **no** writes to the LED files at all.
+    ///
+    /// The device is a shared filesystem, so anything on the machine can drive it —
+    /// an AI agent, an MCP server, a shell script. This app is itself one of those
+    /// writers, and Info mode is a continuous one. Observer mode hands the device
+    /// over: nothing is written, so nothing fights. The keepalive keeps running,
+    /// because it touches `keepalive` rather than `LEDS.LED` — the firmware never
+    /// parses it, no other tool is competing for it, and without it the reader
+    /// powers the card down after ~3 minutes, which would break everyone.
+    /// Persisted — the app stores no other settings, but this one has to survive a
+    /// restart: it is switched on precisely because something else owns the device,
+    /// and silently resuming writes on the next launch would be the whole failure
+    /// it exists to prevent.
+    @Published var observerMode = UserDefaults.standard.bool(forKey: "observerMode") {
+        didSet {
+            guard observerMode != oldValue else { return }
+            UserDefaults.standard.set(observerMode, forKey: "observerMode")
+            if observerMode {
+                setStatus(.info, "Observer mode on — the app won't write to the device.")
+            } else {
+                setStatus(.info, "Observer mode off — the app can write again.")
+                // Repaint immediately so Info mode doesn't wait for the next tick.
+                if infoActive { showInfoFrame(advance: false, force: true) }
+            }
+        }
+    }
+
+    /// True when the app is writing on a timer right now — the state other tools
+    /// would collide with. Presets and colours are one-shot; Info mode is not.
+    var isWritingContinuously: Bool { infoActive && !observerMode }
+
+    /// True when the last read of LEDS.LED didn't match what we last wrote, i.e.
+    /// something else is driving this device.
+    @Published private(set) var programChangedExternally = false
+
     /// Auto-try the repair once, ~30s after the device looks wedged/disconnected.
     @Published var autoRepair = true
     private var autoRepairTimer: Timer?
@@ -464,7 +499,8 @@ final class DeviceManager: ObservableObject {
         // could never undo: the app would turn off LEDs it never turned on, and
         // they'd stay off until the user set a program by hand. Whatever the strip
         // is showing then isn't ours to clear.
-        guard DeviceManager.shouldSwitchOffOnSleep(enabled: ledsOffOnSleep,
+        guard !observerMode,
+              DeviceManager.shouldSwitchOffOnSleep(enabled: ledsOffOnSleep,
                                                    hasRestorableProgram: lastWrittenLEDS != nil),
               let device = selectedDevice else { return }
         let url = device.ledsURL
@@ -484,7 +520,7 @@ final class DeviceManager: ObservableObject {
         // The app is exiting, so the async I/O queue won't run — write off
         // synchronously instead. performWrite is bounded by its own timeout, and
         // every connected device gets switched off (skipping any that's wedged).
-        guard ledsOffOnQuit else { return }
+        guard ledsOffOnQuit, !observerMode else { return }
         let off = LEDProgram.wireText(LEDProgram.off())
         for device in devices where !stuckVolumes.contains(device.volumeURL.path) {
             _ = DeviceManager.performWrite(off, to: device.ledsURL)
@@ -579,6 +615,15 @@ final class DeviceManager: ObservableObject {
         let validation = LEDProgram.validate(program)
         guard validation.isValid else {
             setStatus(.error, validation.message ?? "Invalid program.")
+            return validation
+        }
+        guard !observerMode else {
+            // Say so for something the user just asked for; stay quiet for the
+            // automatic writes, which would otherwise spam the banner every tick.
+            if kind == .leds || kind == .initLeds {
+                setStatus(.warning, "Observer mode is on — turn it off to write to the device.")
+            }
+            lastDeliveryAccepted = false
             return validation
         }
         // Don't give up on stale state: re-check /Volumes (just a name match, no
@@ -921,7 +966,16 @@ final class DeviceManager: ObservableObject {
                 self.inFlightVolumes.remove(vol)
                 switch result {
                 case .ok:
-                    self.currentProgram = text ?? ""
+                    let onDevice = text ?? ""
+                    self.currentProgram = onDevice
+                    // Compare against what we last wrote: anything else means
+                    // another tool is driving this device.
+                    if let ours = self.lastWrittenLEDS {
+                        self.programChangedExternally =
+                            LEDProgram.wireText(onDevice) != LEDProgram.wireText(ours)
+                    } else {
+                        self.programChangedExternally = false
+                    }
                 case .stuck:
                     self.stuckVolumes.insert(vol)
                     self.setStatus(.warning, "Device stopped responding — I/O paused. Reconnect it to recover.")
