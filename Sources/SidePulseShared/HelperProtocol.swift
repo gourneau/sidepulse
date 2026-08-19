@@ -4,11 +4,11 @@ import Foundation
 ///
 /// The only value defined here is the app's bundle identifier; everything else is
 /// derived from it, and the required signing Team is read from the helper's own
-/// signature at runtime (see `SDRGBHelper`) — so there's no hardcoded Team ID.
+/// signature at runtime (see `SidePulseHelper`) — so there's no hardcoded Team ID.
 /// (Future: inject `appBundleID` from an xcconfig/Info.plist at build time.)
 public enum HelperConstants {
     /// The app's bundle identifier (matches Info.plist CFBundleIdentifier).
-    public static let appBundleID = "com.gourneau.SDRGB"
+    public static let appBundleID = "com.gourneau.SidePulse"
     /// Mach service the daemon vends and the app connects to.
     public static let machServiceName = appBundleID + ".helper"
     /// LaunchDaemon label and plist filename (in Contents/Library/LaunchDaemons).

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regenerate Sources/SDRGB/SpecText.swift from LEDS_FORMAT.md, so the in-app spec
+# Regenerate Sources/SidePulse/SpecText.swift from LEDS_FORMAT.md, so the in-app spec
 # viewer and the repo's copy of the DSL reference can never drift apart.
 #
 #   scripts/embed_spec.sh            # write SpecText.swift
@@ -8,7 +8,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/LEDS_FORMAT.md"
-DEST="$ROOT/Sources/SDRGB/SpecText.swift"
+DEST="$ROOT/Sources/SidePulse/SpecText.swift"
 
 # The spec contains backslash escapes inside shell examples (line 16 has a literal
 # `\n` in an echo). A plain """ literal would turn those into real newlines and

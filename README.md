@@ -1,4 +1,4 @@
-# SDRGB
+# SidePulse
 
 A tiny macOS **menu-bar app** to control [SidePulse](https://github.com/inteliwear/sidepulse)
 LED devices — and, most importantly, a **keepalive that touches each device every
@@ -34,7 +34,7 @@ minute** so it stays alive.
   **Reload** button) so you can see the running program and edit it. Live
   512-byte / 10-line validation, a **Format help** button with the full DSL
   reference, and a "Writing…" busy state.
-- **Status banner**: clear success/warning/error messages (e.g. "Updated SDRGB",
+- **Status banner**: clear success/warning/error messages (e.g. "Updated SidePulse",
   or what to do if a write fails).
 - **Keep Mac awake**: a footer toggle that prevents the Mac from sleeping (so the
   keepalive keeps running while you're away). The default uses an IOKit power
@@ -72,7 +72,7 @@ contain that:
 - **Keepalive touches one zero-byte file** (`keepalive`) once a minute —
   bounded, single-flight, and isolated like every other write.
 
-Maintenance: `SDRGB.app/Contents/MacOS/SDRGB --unregister-login` removes the
+Maintenance: `SidePulse.app/Contents/MacOS/SidePulse --unregister-login` removes the
 launch-at-login item without starting the app or touching any device.
 
 None of this can *fully* prevent a determined hardware/driver stall — the surest
@@ -97,27 +97,44 @@ swift run
 
 # build a real app bundle (menu-bar agent, ad-hoc signed)
 scripts/package_app.sh
-open build/SDRGB.app
+open build/SidePulse.app
 ```
 
 To install permanently and use "Launch at login":
 
+### Upgrading from SDRGB
+
+The app used to be called **SDRGB**, with bundle id `com.gourneau.SDRGB`. The
+rename changes the bundle id to `com.gourneau.SidePulse`, and macOS keys the
+privileged-helper registration and the Login Items approval to the bundle that
+made them — so the new app **cannot** clean up after the old one. Run this once
+before installing:
+
 ```sh
-cp -R build/SDRGB.app /Applications/
-open /Applications/SDRGB.app
+scripts/uninstall_legacy.sh
+```
+
+It removes the old login item, boots out the old root LaunchDaemon
+(`com.gourneau.SDRGB.helper`), drops the old sudoers rule, and deletes
+`/Applications/SDRGB.app`. Then install SidePulse.app and approve the helper
+once when prompted.
+
+```sh
+cp -R build/SidePulse.app /Applications/
+open /Applications/SidePulse.app
 ```
 
 ## Lid-closed keep-awake: privileged helper
 
 Lid-closed keep-awake needs root (`pmset disablesleep`). The shippable design uses
-a **privileged `SMAppService` LaunchDaemon helper + XPC** (`SDRGBHelper`):
+a **privileged `SMAppService` LaunchDaemon helper + XPC** (`SidePulseHelper`):
 
-- The helper (`Sources/SDRGBHelper`) is a tiny root daemon vending one XPC method
+- The helper (`Sources/SidePulseHelper`) is a tiny root daemon vending one XPC method
   (`setDisableSleep`). It only accepts connections from this app signed by the
   **same Team** (the Team is read from the helper's own signature at runtime — no
-  hardcoded Team ID; see `Sources/SDRGBShared/HelperProtocol.swift`).
+  hardcoded Team ID; see `Sources/SidePulseShared/HelperProtocol.swift`).
 - The app registers it via `SMAppService.daemon`. First enable → macOS asks you to
-  **approve "SDRGB" in System Settings → General → Login Items** (Allow in the
+  **approve "SidePulse" in System Settings → General → Login Items** (Allow in the
   Background). After that, toggling is **passwordless forever** over XPC.
 - Unsigned/dev builds (`swift run`, or `SIGN_IDENTITY=-`) can't register a daemon,
   so they fall back to a one-time passwordless `sudo` rule.
@@ -133,10 +150,10 @@ register otherwise). `scripts/package_app.sh` signs both with it + hardened runt
 scripts/release.sh v0.1.0-beta.3 ["optional notes"]
 ```
 
-It uses a stored notarytool keychain profile named `sdrgb-notary` (set up once):
+It uses a stored notarytool keychain profile named `sidepulse-notary` (set up once):
 
 ```sh
-xcrun notarytool store-credentials sdrgb-notary \
+xcrun notarytool store-credentials sidepulse-notary \
   --key AuthKey_XXXXXX.p8 --key-id XXXXXX --issuer <issuer-uuid>
 ```
 
@@ -147,7 +164,7 @@ There's also a CI path: pushing a `v*` tag runs `.github/workflows/release.yml`,
 which does the same on a macOS runner using repo secrets. Either works; the script
 is handy when your Mac is newer than the GitHub runners.
 
-Distribute the stapled `SDRGB.app` (e.g. zipped or in a DMG). This is a Developer
+Distribute the stapled `SidePulse.app` (e.g. zipped or in a DMG). This is a Developer
 ID / direct-download app — the privileged helper is **not** compatible with the
 sandboxed Mac App Store / TestFlight.
 

@@ -54,12 +54,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "$AC_API_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/ac.p8"
-          ditto -c -k --keepParent build/SDRGB.app build/SDRGB-notarize.zip
-          xcrun notarytool submit build/SDRGB-notarize.zip \
+          ditto -c -k --keepParent build/SidePulse.app build/SidePulse-notarize.zip
+          xcrun notarytool submit build/SidePulse-notarize.zip \
             --key "$RUNNER_TEMP/ac.p8" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER" --wait
-          xcrun stapler staple build/SDRGB.app
-          rm -f "$RUNNER_TEMP/ac.p8" build/SDRGB-notarize.zip
-          ditto -c -k --keepParent build/SDRGB.app build/SDRGB.zip
+          xcrun stapler staple build/SidePulse.app
+          rm -f "$RUNNER_TEMP/ac.p8" build/SidePulse-notarize.zip
+          ditto -c -k --keepParent build/SidePulse.app build/SidePulse.zip
 
       - name: Publish release
         env:
@@ -67,6 +67,6 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             --prerelease \
-            --title "SDRGB ${GITHUB_REF_NAME}" \
+            --title "SidePulse ${GITHUB_REF_NAME}" \
             --generate-notes \
-            build/SDRGB.zip
+            build/SidePulse.zip

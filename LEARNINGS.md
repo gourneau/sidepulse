@@ -1,4 +1,4 @@
-# SDRGB — Learnings & Important Info
+# SidePulse — Learnings & Important Info
 
 Hard-won notes about the device, the macOS gotchas, and the app's design. Read
 this before changing the I/O, signing, or device-detection code.
@@ -96,7 +96,7 @@ Lid-closed keep-awake (`pmset disablesleep`) and Repair (kill fskit + remount)
 need root. Two paths:
 
 - **Signed build (shipping):** an **SMAppService LaunchDaemon helper**
-  (`Sources/SDRGBHelper`) running as root, talked to over **XPC**
+  (`Sources/SidePulseHelper`) running as root, talked to over **XPC**
   (`HelperProtocol`). Approve once in **System Settings → Login Items**, then
   every call is **passwordless forever**. The helper only accepts XPC from our
   app, signed by **the same Team** (Team is read from the helper's *own*
@@ -135,6 +135,7 @@ Apple-sanctioned way. **Needs a Developer ID Application cert** (we have Team
 
 ## Repo
 
-- Private: `github.com/gourneau/sdrgb` (branch `master`).
-- `SDRGB` is a placeholder product name (it's the SD-card volume name); user-facing
-  status text is kept generic.
+- `github.com/gourneau/sidepulse` (branch `main`).
+- The app was called SDRGB until the device shipped as **SidePulse**; the bundle
+  id is now `com.gourneau.SidePulse`. Anyone upgrading from an SDRGB build must
+  run `scripts/uninstall_legacy.sh` first — see the README.

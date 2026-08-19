@@ -1,6 +1,6 @@
 import Foundation
 import Security
-import SDRGBShared
+import SidePulseShared
 import XPCAuditToken
 
 let helperVersion = "1.0"
@@ -81,7 +81,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         guard let requirementText = clientRequirement() else { return false }
         // Validate by audit token, not PID: a PID can be recycled to a different
         // process between connect and check, but the audit token cannot be forged.
-        guard let tokenData = SDRGBAuditToken(connection) else { return false }
+        guard let tokenData = SidePulseAuditToken(connection) else { return false }
         let attrs = [kSecGuestAttributeAudit: tokenData] as CFDictionary
         var code: SecCode?
         guard SecCodeCopyGuestWithAttributes(nil, attrs, SecCSFlags(), &code) == errSecSuccess,

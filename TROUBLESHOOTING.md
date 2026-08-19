@@ -38,7 +38,7 @@ and **auto-repair** (default on) tries it ~30 s after a wedge.
 - LEDs frozen / not responding to writes; or LEDs flashed white right before a
   power-off/sleep.
 - Finder beachballs when opening a folder or showing the device.
-- Apps won't launch (`open` returns `-600`); SDRGB.app doesn't appear in the menu bar.
+- Apps won't launch (`open` returns `-600`); SidePulse.app doesn't appear in the menu bar.
 - The device is missing from `/Volumes`, **or** present but any access hangs.
 
 ## Diagnose

@@ -6,8 +6,9 @@
 #   scripts/release.sh v0.1.0-beta.3 ["release notes"]
 #
 # Notarization credentials, resolved in this order:
-#   1. A stored notarytool keychain profile named "sdrgb-notary"
-#      (xcrun notarytool store-credentials sdrgb-notary --key AuthKey_XXXX.p8 \
+#   1. A stored notarytool keychain profile named "sidepulse-notary", falling back
+#      to the older "sdrgb-notary" so an existing keychain entry keeps working
+#      (xcrun notarytool store-credentials sidepulse-notary --key AuthKey_XXXX.p8 \
 #         --key-id XXXX --issuer <issuer-uuid>)
 #   2. Otherwise: an App Store Connect API key file AuthKey_*.p8 in the repo root,
 #      with the Issuer ID in .env as  ISSUER_ID=<uuid>  (Key ID is read from the
@@ -19,9 +20,9 @@ NOTES="${2:-Notarized & stapled build — runs on any Mac with no Gatekeeper pro
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-APP="build/SDRGB.app"
-ZIP="build/SDRGB.zip"
-NZIP="build/SDRGB-notarize.zip"
+APP="build/SidePulse.app"
+ZIP="build/SidePulse.zip"
+NZIP="build/SidePulse-notarize.zip"
 
 echo "==> 1/5 build + sign"
 export APP_VERSION="${TAG#v}"   # stamp the release version into the bundle
@@ -35,8 +36,15 @@ echo "$SIGN_INFO" | grep -q "Developer ID Application" \
 
 echo "==> 2/5 notarize (Apple scan, ~1-5 min)"
 rm -f "$NZIP"; ditto -c -k --keepParent "$APP" "$NZIP"
-if xcrun notarytool history --keychain-profile sdrgb-notary >/dev/null 2>&1; then
-  xcrun notarytool submit "$NZIP" --keychain-profile sdrgb-notary --wait
+NOTARY_PROFILE=""
+for candidate in sidepulse-notary sdrgb-notary; do
+  if xcrun notarytool history --keychain-profile "$candidate" >/dev/null 2>&1; then
+    NOTARY_PROFILE="$candidate"; break
+  fi
+done
+if [ -n "$NOTARY_PROFILE" ]; then
+  echo "    using keychain profile $NOTARY_PROFILE"
+  xcrun notarytool submit "$NZIP" --keychain-profile "$NOTARY_PROFILE" --wait
 else
   KEY="$(ls AuthKey_*.p8 2>/dev/null | head -1 || true)"
   [ -n "$KEY" ] || { echo "ERROR: no notary profile and no AuthKey_*.p8 found."; exit 1; }
@@ -56,6 +64,6 @@ rm -f "$ZIP" "$NZIP"; ditto -c -k --keepParent "$APP" "$ZIP"
 
 echo "==> 5/5 tag + publish GitHub prerelease $TAG"
 git rev-parse "$TAG" >/dev/null 2>&1 || { git tag "$TAG"; git push origin "$TAG"; }
-gh release create "$TAG" --prerelease --title "SDRGB $TAG" --notes "$NOTES" "$ZIP"
+gh release create "$TAG" --prerelease --title "SidePulse $TAG" --notes "$NOTES" "$ZIP"
 
-echo "==> done: https://github.com/gourneau/sdrgb/releases/tag/$TAG"
+echo "==> done: https://github.com/gourneau/sidepulse/releases/tag/$TAG"

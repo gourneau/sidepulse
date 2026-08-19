@@ -1,4 +1,4 @@
-# CLAUDE.md — SDRGB
+# CLAUDE.md — SidePulse
 
 Guidance for working in this repo. See `README.md` for the user-facing feature
 list, `LEARNINGS.md` / `TROUBLESHOOTING.md` for device + fskit-wedge debugging.
@@ -19,10 +19,10 @@ the name-only scan runs on the main thread and feeds `deliver()`, which writes.
 
 ## Targets (Package.swift)
 
-- **SDRGB** — the menu-bar app (executable).
-- **SDRGBHelper** — a privileged root LaunchDaemon (executable), installed via
+- **SidePulse** — the menu-bar app (executable).
+- **SidePulseHelper** — a privileged root LaunchDaemon (executable), installed via
   `SMAppService`, vending XPC methods (`setDisableSleep`, `repair`, `version`).
-- **SDRGBShared** — the XPC protocol + constants, compiled into both.
+- **SidePulseShared** — the XPC protocol + constants, compiled into both.
 - **XPCAuditToken** — a tiny ObjC shim exposing `NSXPCConnection.auditToken` so
   the helper validates clients by audit token (not PID, which can be recycled).
 
@@ -31,8 +31,8 @@ the name-only scan runs on the main thread and feeds `deliver()`, which writes.
 ```sh
 swift build                 # debug build of all targets
 swift run                   # run the app straight from SwiftPM (unsigned dev)
-scripts/package_app.sh      # build + Developer ID sign app + helper → build/SDRGB.app
-open build/SDRGB.app
+scripts/package_app.sh      # build + Developer ID sign app + helper → build/SidePulse.app
+open build/SidePulse.app
 ```
 
 - **Toolchain strictness:** local Swift is lenient about Swift-6 concurrency;
@@ -54,7 +54,9 @@ scripts/release.sh v0.1.0-beta.N ["optional notes"]   # build→sign→notarize�
   helper to register (`SMAppService.daemon`); `package_app.sh` signs both with
   hardened runtime and embeds the LaunchDaemon plist.
 - Notarization: `xcrun notarytool` via the stored keychain profile
-  **`sdrgb-notary`**. If absent, `release.sh` falls back to `AuthKey_*.p8` in the
+  **`sidepulse-notary`** (the older `sdrgb-notary` is still accepted, so an
+  existing keychain entry keeps working). If absent, `release.sh` falls back to
+  `AuthKey_*.p8` in the
   repo root + `ISSUER_ID=<uuid>` in `.env`.
 - CI: pushing a `v*` tag runs `.github/workflows/release.yml` (runs-on
   `macos-15`) which imports the cert from repo secrets and does the same. The
@@ -115,7 +117,7 @@ not `openssl`.
 - **`SpecText.swift` is generated** from `LEDS_FORMAT.md` by
   `scripts/embed_spec.sh` (`--check` verifies sync). It must stay a **raw**
   string literal: the spec's shell examples contain literal `\n`.
-- **Single instance** is enforced in `SDRGBApp.init` (concurrent writers wedge
+- **Single instance** is enforced in `SidePulseApp.init` (concurrent writers wedge
   the device). `--unregister-login` removes the login item and quits without
   touching any device.
 
@@ -124,5 +126,5 @@ not `openssl`.
 - Header **status dot** → click opens the 24h Activity window (events filter);
   **heart** → opens it (keepalive filter). Both use `.pointingCursor()` and fast
   native `.help()` tooltips (`NSInitialToolTipDelay` set to 80ms in
-  `SDRGBApp.init`). The Activity window is a separate `Window(id: "activity")`
+  `SidePulseApp.init`). The Activity window is a separate `Window(id: "activity")`
   scene brought to front with the same accessory→regular dance as the spec window.
