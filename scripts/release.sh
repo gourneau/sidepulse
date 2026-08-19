@@ -36,12 +36,31 @@ echo "$SIGN_INFO" | grep -q "Developer ID Application" \
 
 echo "==> 2/5 notarize (Apple scan, ~1-5 min)"
 rm -f "$NZIP"; ditto -c -k --keepParent "$APP" "$NZIP"
+# A profile that exists but is rejected by Apple is a completely different
+# problem from one that was never set up, and reporting both as "no notary
+# profile found" sends you looking for a missing credential that is right there.
 NOTARY_PROFILE=""
+NOTARY_ERROR=""
 for candidate in sidepulse-notary sdrgb-notary; do
-  if xcrun notarytool history --keychain-profile "$candidate" >/dev/null 2>&1; then
+  if OUT="$(xcrun notarytool history --keychain-profile "$candidate" 2>&1)"; then
     NOTARY_PROFILE="$candidate"; break
   fi
+  case "$OUT" in
+    *"No Keychain password item found"*) : ;;   # simply not set up; try the next
+    *) NOTARY_ERROR="$candidate: $(printf '%s' "$OUT" | tr '\n' ' ')" ;;
+  esac
 done
+if [ -z "$NOTARY_PROFILE" ] && [ -n "$NOTARY_ERROR" ]; then
+  echo "ERROR: a notarytool keychain profile exists, but Apple rejected it:" >&2
+  echo "  $NOTARY_ERROR" >&2
+  echo >&2
+  echo "  'A required agreement is missing or has expired' is an account-level" >&2
+  echo "  problem, not a credential one: sign in at developer.apple.com (and" >&2
+  echo "  App Store Connect) as the Account Holder and accept the pending" >&2
+  echo "  agreements, then re-run this script. Nothing has been tagged or" >&2
+  echo "  published — $APP is built and Developer ID signed, just not notarized." >&2
+  exit 1
+fi
 if [ -n "$NOTARY_PROFILE" ]; then
   echo "    using keychain profile $NOTARY_PROFILE"
   xcrun notarytool submit "$NZIP" --keychain-profile "$NOTARY_PROFILE" --wait
