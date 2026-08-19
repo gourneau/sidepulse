@@ -240,6 +240,19 @@ final class FormatTests: XCTestCase {
             LEDProgram.pulseBar(hex: "#ffffff", value: 1, ledCount: 8, durationMs: 999_999)).isValid)
     }
 
+    // MARK: Sleep / wake
+
+    /// The app must not switch off LEDs it cannot switch back on. With nothing
+    /// recorded — a fresh launch where the user hasn't picked a program yet —
+    /// sleeping would clear the strip and wake would restore nothing, leaving it
+    /// dark until the user set something by hand.
+    func testSleepOnlySwitchesOffWhenWakeCanRestore() {
+        XCTAssertTrue(DeviceManager.shouldSwitchOffOnSleep(enabled: true, hasRestorableProgram: true))
+        XCTAssertFalse(DeviceManager.shouldSwitchOffOnSleep(enabled: true, hasRestorableProgram: false))
+        XCTAssertFalse(DeviceManager.shouldSwitchOffOnSleep(enabled: false, hasRestorableProgram: true))
+        XCTAssertFalse(DeviceManager.shouldSwitchOffOnSleep(enabled: false, hasRestorableProgram: false))
+    }
+
     // MARK: Spec rendering
 
     /// The spec's preamble uses four-space-indented shell examples. Before this,

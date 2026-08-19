@@ -296,9 +296,6 @@ final class DeviceManager: ObservableObject {
         didSet { if infoActive { showInfoFrame(advance: false, force: true) } }
     }
 
-    /// Last manual program (color/preset/raw), restored after wake when
-    /// "turn LEDs off when the Mac sleeps" is on.
-    private var lastUserProgram: String?
     /// When true, switch the LEDs off as the Mac sleeps and restore on wake.
     @Published var ledsOffOnSleep = true
     /// When true, switch the LEDs off as the app quits (no restore — it's gone).
@@ -416,8 +413,11 @@ final class DeviceManager: ObservableObject {
         beat()
         checkHungDriver()
         checkDeviceHealth()
-        // Re-apply the last LED program — the device often resets across sleep,
-        // wiping its program. Give the volume a moment to remount first.
+        // Re-apply the last LED program — the device loses power across sleep and
+        // comes back playing INIT.LED, so whatever we had set is gone. Give the
+        // volume a moment to remount first. `healIfRestarted` would also catch this
+        // on the next beat via the uptime_ms regression; this just makes it prompt
+        // instead of up to a minute later.
         if let program = lastWrittenLEDS {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 guard let self else { return }
@@ -429,11 +429,27 @@ final class DeviceManager: ObservableObject {
 
     @objc private func willSleep() {
         // Optionally switch the LEDs off as the Mac sleeps (restored on wake).
-        guard ledsOffOnSleep, let device = selectedDevice else { return }
+        //
+        // Only when there is something to restore. `lastWrittenLEDS` is what
+        // `didWake` puts back, so with nothing recorded — a fresh launch where the
+        // user hasn't picked anything yet — switching off would be a change we
+        // could never undo: the app would turn off LEDs it never turned on, and
+        // they'd stay off until the user set a program by hand. Whatever the strip
+        // is showing then isn't ours to clear.
+        guard DeviceManager.shouldSwitchOffOnSleep(enabled: ledsOffOnSleep,
+                                                   hasRestorableProgram: lastWrittenLEDS != nil),
+              let device = selectedDevice else { return }
         let url = device.ledsURL
         enqueueIO(kind: .info, volume: device.volumeURL.path) {
             DeviceManager.performWrite(LEDProgram.wireText(LEDProgram.off()), to: url)
         }
+    }
+
+    /// Switching off at sleep is only safe when `didWake` has something to put back.
+    /// Split out so the rule is testable on its own — the handler it lives in is
+    /// driven by an NSWorkspace notification and reads private state.
+    nonisolated static func shouldSwitchOffOnSleep(enabled: Bool, hasRestorableProgram: Bool) -> Bool {
+        enabled && hasRestorableProgram
     }
 
     @objc private func appWillTerminate() {
@@ -553,7 +569,6 @@ final class DeviceManager: ObservableObject {
             setStatus(.error, "No device connected.")
             return validation
         }
-        if kind == .leds || kind == .liveLeds { lastUserProgram = program }   // restore-after-sleep
         // The spec says writing INIT.LED also applies it immediately, so it
         // genuinely becomes the visible state and is what self-heal should restore.
         lastWrittenLEDS = program
