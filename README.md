@@ -1,157 +1,109 @@
-# SidePulse
+<h1 align="center">SidePulse for Mac</h1>
 
-A tiny macOS **menu-bar app** to control [SidePulse](https://github.com/inteliwear/sidepulse)
-LED devices — and, most importantly, a **keepalive that touches each device every
-minute** so it stays alive.
+<p align="center">
+  <b>Eight LEDs that actually stay on.</b><br>
+  A menu-bar app for SidePulse Pro and SidePulse Dot — keeps the device awake, puts your
+  battery, CPU, GPU and memory on the strip, and hands you the LED format when you want
+  to write your own.
+</p>
 
-## What it does
+<p align="center">
+  <a href="https://gourneau.github.io/sidepulse/">Website</a> ·
+  <a href="https://github.com/gourneau/sidepulse/releases/latest">Download</a> ·
+  <a href="docs/ARCHITECTURE.md">How it works</a> ·
+  <a href="LEDS_FORMAT.md">LED format</a>
+</p>
 
-- Lives in the menu bar (lightbulb icon), no dock icon.
-- **Keepalive**: every minute it **touches** `keepalive` on
-  every connected device — a dedicated file the firmware never parses, so the LED
-  animation is never disturbed. A write is more "activity" than a read, which the
-  device's firmware needs to stay awake. Click the **heart** in the header to see
-  the keepalive log (last 24h).
-- **Self-heal**: after each keepalive (and after the Mac wakes), if the device has
-  restarted (its `uptime_ms` went backwards), the app silently
-  re-applies the last program — so the LEDs come back without any user action.
-  This is the fix for "woke up and the LEDs were off."
-- **Activity log**: click the header **status dot** for the last 24h of events
-  (updates, warnings, errors, repairs); click the **heart** for keepalive writes.
-- **Color** tab: an inline color editor (swatches + RGB sliders) + brightness.
-  Updates **live** as you drag — no Apply button. Plus an Off button.
-- **Per-LED** tab: tap an LED to select it, then edit its color live (8 LEDs for
-  SidePulse Pro, 2 for SidePulse Dot).
-- **Presets**: Rainbow (smooth flowing hue gradient), Breathe, Sparkle, White,
-  Off. Animated presets have an **Animated** toggle and a **Speed** slider
-  (Slow…Fast); plus a brightness slider. All re-apply live.
-- **Modes**: show live system info on the whole strip. Toggle metrics on and each
-  fills the full strip in its color to its level — Battery (white), CPU (blue),
-  Memory (green). Enable several and it **cycles** between them; a **Time between
-  modes** slider (2–30s) sets the cadence. Only writes when the displayed bar
-  changes. Picking a color or preset takes back manual control.
-- **DSL** tab: shows the **actual `LEDS.LED` currently on the device** (with a
-  **Reload** button) so you can see the running program and edit it. Live
-  512-byte / 10-line validation, a **Format help** button with the full DSL
-  reference, and a "Writing…" busy state.
-- **Status banner**: clear success/warning/error messages (e.g. "Updated SidePulse",
-  or what to do if a write fails).
-- **Keep Mac awake**: a footer toggle that prevents the Mac from sleeping (so the
-  keepalive keeps running while you're away). The default uses an IOKit power
-  assertion (lid open, **no permissions**). An opt-in **"…even with the lid
-  closed"** sets the kernel `SleepDisabled` flag via `pmset disablesleep`, which
-  needs **admin** (one macOS password/Touch ID prompt); it reflects the real flag
-  on launch, reverts on disable/quit, and clears on reboot. Keep the Mac on power
-  in lid-closed mode — it can run warm.
-- **Launch at login** toggle (works once installed in `/Applications`); a subtle
-  keepalive line sits at the bottom — it should just work. Status detail (time)
-  shows on hover, not as ticking numbers.
+<p align="center">
+  <img src="docs/assets/led-strip.gif" width="760"
+       alt="The eight-LED strip cycling through a solid colour, Rainbow, Chase, a battery bar and Breathe, with each program's source beneath it">
+</p>
 
-The inline color editor is used instead of the native macOS color picker on
-purpose: the system `NSColorPanel` is unreliable inside a menu-bar (accessory)
-app, so a self-contained editor is both more reliable and easy to make live.
+<p align="center"><sub>A simulation driven by the same programs the app writes — not footage of the hardware.</sub></p>
 
-## Fault tolerance
-
-The device is a `CH32X035` microcontroller *emulating* a USB drive, and its tiny
-mass-storage firmware can wedge under frequent writes — and a wedged write enters
-an uninterruptible kernel I/O wait that can stall macOS's filesystem layer. To
-contain that:
-
-- **Animations run on the firmware.** Presets (rainbow, breathe, sparkle) are
-  written once as looping DSL programs; the device animates them itself, so a good
-  animation costs ~zero ongoing I/O.
-- **All device I/O runs in a throwaway child process** with a 5s timeout. If the
-  device wedges, only that child gets stuck (and is abandoned) — the app stays
-  responsive and quits cleanly. The volume is marked "paused" until reconnected.
-- **Per-device single-flight + gentle cadence.** Never more than one I/O op per
-  device at a time; live edits throttle to ~5/s; Info mode cycles every 5s and
-  only writes when the displayed bar changes.
-- **Single instance.** A second copy won't launch (concurrent writers were a big
-  part of what wedged the device).
-- **Keepalive touches one zero-byte file** (`keepalive`) once a minute —
-  bounded, single-flight, and isolated like every other write.
-
-Maintenance: `SidePulse.app/Contents/MacOS/SidePulse --unregister-login` removes the
-launch-at-login item without starting the app or touching any device.
-
-None of this can *fully* prevent a determined hardware/driver stall — the surest
-safety is to not run Info mode 24/7 and to use whichever connection (USB-C Dot
-vs the SD slot) proves more stable.
-
-## Device detection
-
-A mounted volume is treated as a device when its name matches `SidePulse`,
-`SidePulsePro` or `SidePulseDot` exactly (normalized) **and** it contains
-`LEDS.LED`. Shipping units mount as plain `SidePulse`, so the LED count is read
-from `INIT.LED` — the firmware seeds it with a per-index startup fill — falling
-back to the name, then to the 8-LED Pro layout. The CH32X035 can
-appear as both a USB-MSC volume and the SD card at once — both are detected, you
-pick which one colors go to, and the keepalive runs on all of them.
-
-## Build & run
+## Install
 
 ```sh
-# dev: run straight from SwiftPM
-swift run
-
-# build a real app bundle (menu-bar agent, ad-hoc signed)
-scripts/package_app.sh
-open build/SidePulse.app
+brew tap gourneau/sidepulse
+brew install --cask sidepulse
 ```
 
-To install permanently and use "Launch at login":
+Or [download the notarised build](https://github.com/gourneau/sidepulse/releases/latest),
+unzip, and drag it to Applications. No Gatekeeper warning.
+
+Needs macOS 13 or later, and a [SidePulse](https://github.com/inteliwear/sidepulse) device.
+
+## Why it exists
+
+Leave a SidePulse Pro in a MacBook Pro's SD slot and the reader cuts power after about
+three minutes of quiet. The app touches one zero-byte file every sixty seconds, which is
+enough to keep the reader interested and never disturbs the animation. Measured on a real
+unit: uptime past **30 minutes** with the app running, against a power cycle every **~3
+minutes** without it.
+
+When the device does restart anyway, the app notices its uptime counter go backwards and
+puts your program back without being asked.
+
+## What's in it
+
+- **Colour, Per-LED and Presets** — Rainbow, Chase, Breathe, Sparkle, White, Off, each
+  with an animated toggle and a speed slider. Everything applies live, no Apply button.
+- **Modes** — the whole strip becomes a bar for battery (white), CPU (blue), GPU (purple)
+  or memory (green). Enable several and it cycles between them.
+- **The DSL tab** — shows the real `LEDS.LED` on the device, validates as you type against
+  the controller's 512-byte / 20-line limits, and can save what you have to `INIT.LED` so
+  it replays every time the device powers up. Auto-reload shows changes made by anything
+  else on your Mac.
+- **Plays well with other tools** — the device is a shared filesystem, so an AI agent, MCP
+  server or script can drive it too. A header badge reads **Writing** when the app is
+  rewriting on a timer and **Contested** when something else keeps overwriting it, and
+  Observer mode stops every write so another tool can own the device.
+- **Keep the Mac awake**, optionally with the lid closed, through a helper you approve once.
+- **Repair** the macOS FAT-driver wedge and the "ghost card" state without rebooting.
+
+## The format
+
+The device mounts as a small disk. Everything the LEDs do comes from a program written to
+`LEDS.LED` — no drivers, no SDK. The app's own presets are just programs:
+
+```text
+# a rolling rainbow, 90 bytes
+#ff0000 #ffbf00 #80ff00 #00ff40 #00ffff #0040ff #8000ff #ff00bf
+roll 1980ms linear
+repeat
+```
+
+The full reference is in [`LEDS_FORMAT.md`](LEDS_FORMAT.md), and in the app under
+**Format help**.
+
+## Screenshots
+
+|  |  |
+| --- | --- |
+| <img src="docs/assets/app-popover.png" width="380" alt="Placeholder for the menu-bar popover"> | <img src="docs/assets/app-activity.png" width="364" alt="Placeholder for the activity window"> |
+
+<sub>Placeholders for now — see [docs/assets/README.md](docs/assets/README.md) to drop real
+captures in.</sub>
+
+## Build it yourself
 
 ```sh
-cp -R build/SidePulse.app /Applications/
-open /Applications/SidePulse.app
+git clone https://github.com/gourneau/sidepulse
+cd sidepulse
+swift run            # dev build, straight from SwiftPM
+swift test           # the pure-logic tests
+scripts/package_app.sh   # signed .app bundle in build/
 ```
 
-## Lid-closed keep-awake: privileged helper
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers how device I/O is kept from wedging
+the app, how detection works, the privileged helper, and how releases are cut.
 
-Lid-closed keep-awake needs root (`pmset disablesleep`). The shippable design uses
-a **privileged `SMAppService` LaunchDaemon helper + XPC** (`SidePulseHelper`):
+## Credits and licence
 
-- The helper (`Sources/SidePulseHelper`) is a tiny root daemon vending one XPC method
-  (`setDisableSleep`). It only accepts connections from this app signed by the
-  **same Team** (the Team is read from the helper's own signature at runtime — no
-  hardcoded Team ID; see `Sources/SidePulseShared/HelperProtocol.swift`).
-- The app registers it via `SMAppService.daemon`. First enable → macOS asks you to
-  **approve "SidePulse" in System Settings → General → Login Items** (Allow in the
-  Background). After that, toggling is **passwordless forever** over XPC.
-- Unsigned/dev builds (`swift run`, or `SIGN_IDENTITY=-`) can't register a daemon,
-  so they fall back to a one-time passwordless `sudo` rule.
+SidePulse for Mac is by [Joshua Gourneau](https://github.com/gourneau), MIT licensed.
 
-This requires a **Developer ID Application** signing identity (the helper won't
-register otherwise). `scripts/package_app.sh` signs both with it + hardened runtime.
-
-## Shipping (Developer ID + notarized)
-
-**One command** (build → sign → notarize → staple → zip → GitHub prerelease):
-
-```sh
-scripts/release.sh v0.1.0-beta.3 ["optional notes"]
-```
-
-It uses a stored notarytool keychain profile named `sidepulse-notary` (set up once):
-
-```sh
-xcrun notarytool store-credentials sidepulse-notary \
-  --key AuthKey_XXXXXX.p8 --key-id XXXXXX --issuer <issuer-uuid>
-```
-
-If no profile exists, `release.sh` falls back to an `AuthKey_*.p8` in the repo root
-plus `ISSUER_ID=<uuid>` in `.env` (both gitignored).
-
-There's also a CI path: pushing a `v*` tag runs `.github/workflows/release.yml`,
-which does the same on a macOS runner using repo secrets. Either works; the script
-is handy when your Mac is newer than the GitHub runners.
-
-Distribute the stapled `SidePulse.app` (e.g. zipped or in a DMG). This is a Developer
-ID / direct-download app — the privileged helper is **not** compatible with the
-sandboxed Mac App Store / TestFlight.
-
-## Requirements
-
-- macOS 13+ (uses SwiftUI `MenuBarExtra`, `SMAppService`, XPC).
-- Swift toolchain (`swift build`); a Developer ID for the signed helper build.
+The **SidePulse Pro** and **SidePulse Dot** devices, their firmware and the `LEDS.LED`
+format are a separate project by Peter Kuhar —
+[github.com/inteliwear/sidepulse](https://github.com/inteliwear/sidepulse). This app is
+independent and not endorsed by them; you'll need one of those devices for it to have
+anything to talk to.
