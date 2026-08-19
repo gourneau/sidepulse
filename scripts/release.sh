@@ -86,12 +86,14 @@ rm -f "$ZIP" "$NZIP"; ditto -c -k --keepParent "$APP" "$ZIP"
 # prerelease makes /releases/latest return 404, which breaks Homebrew livecheck
 # and `brew audit --online` — all four earlier releases had this problem.
 case "$TAG" in
-  *beta*|*alpha*|*rc*|*-pre*) PRERELEASE=(--prerelease); KIND="prerelease" ;;
-  *)                          PRERELEASE=();            KIND="release" ;;
+  # A scalar, not an array: under `set -u` bash 3.2 (which is what macOS ships)
+  # errors on "${arr[@]}" when the array is empty.
+  *beta*|*alpha*|*rc*|*-pre*) PRERELEASE="--prerelease"; KIND="prerelease" ;;
+  *)                          PRERELEASE="";            KIND="release" ;;
 esac
 
 echo "==> 5/5 tag + publish GitHub $KIND $TAG"
 git rev-parse "$TAG" >/dev/null 2>&1 || { git tag "$TAG"; git push origin "$TAG"; }
-gh release create "$TAG" "${PRERELEASE[@]}" --title "SidePulse $TAG" --notes "$NOTES" "$ZIP"
+gh release create "$TAG" $PRERELEASE --title "SidePulse $TAG" --notes "$NOTES" "$ZIP"
 
 echo "==> done: https://github.com/gourneau/sidepulse/releases/tag/$TAG"
