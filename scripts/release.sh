@@ -6,8 +6,9 @@
 #   scripts/release.sh v0.1.0-beta.3 ["release notes"]
 #
 # Notarization credentials, resolved in this order:
-#   1. A stored notarytool keychain profile named "sidepulse-notary", falling back
-#      to the older "sdrgb-notary" so an existing keychain entry keeps working
+#   1. A stored notarytool keychain profile named "sidepulse-notary". "sdrgb-notary"
+#      is also accepted: it is the name this Mac's existing App Store Connect
+#      credential was stored under, and re-storing it is the only way to drop that
 #      (xcrun notarytool store-credentials sidepulse-notary --key AuthKey_XXXX.p8 \
 #         --key-id XXXX --issuer <issuer-uuid>)
 #   2. Otherwise: an App Store Connect API key file AuthKey_*.p8 in the repo root,

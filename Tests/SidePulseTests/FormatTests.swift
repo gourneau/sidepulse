@@ -30,9 +30,7 @@ final class FormatTests: XCTestCase {
         XCTAssertFalse(claims("Macintosh HD"))
         XCTAssertFalse(claims("Time Machine"))
         XCTAssertFalse(claims(""))
-        // The pre-SidePulse volume names are no longer claimed at all.
-        XCTAssertFalse(claims("SDRGB"))
-        XCTAssertFalse(claims("USBDOT"))
+        XCTAssertFalse(claims("SidePulse Pro Backup"))
     }
 
     func testModelIsTakenFromTheNameOnlyWhenTheNameSaysSo() {

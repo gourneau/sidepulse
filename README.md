@@ -102,23 +102,6 @@ open build/SidePulse.app
 
 To install permanently and use "Launch at login":
 
-### Upgrading from SDRGB
-
-The app used to be called **SDRGB**, with bundle id `com.gourneau.SDRGB`. The
-rename changes the bundle id to `com.gourneau.SidePulse`, and macOS keys the
-privileged-helper registration and the Login Items approval to the bundle that
-made them — so the new app **cannot** clean up after the old one. Run this once
-before installing:
-
-```sh
-scripts/uninstall_legacy.sh
-```
-
-It removes the old login item, boots out the old root LaunchDaemon
-(`com.gourneau.SDRGB.helper`), drops the old sudoers rule, and deletes
-`/Applications/SDRGB.app`. Then install SidePulse.app and approve the helper
-once when prompted.
-
 ```sh
 cp -R build/SidePulse.app /Applications/
 open /Applications/SidePulse.app
