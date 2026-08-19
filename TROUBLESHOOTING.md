@@ -1,4 +1,4 @@
-# Troubleshooting a stuck SDRGB / USBDOT device
+# Troubleshooting a stuck SidePulse device
 
 Field notes for when the LED device (and often **Finder / the whole Mac**) gets
 stuck. This is a real, repeatable macOS bug — these are the symptoms, how to
@@ -8,7 +8,7 @@ confirm it, and how to fix it without a reboot.
 
 ```sh
 sudo pkill -9 -f com.apple.fskit.msdos     # kill the hung FAT driver
-diskutil list                               # find the device disk, e.g. "SDRGB ... disk7"
+diskutil list                               # find the device disk, e.g. "SidePulse ... disk7"
 diskutil mount disk7                         # remount it (no replug needed)
 ```
 
@@ -48,7 +48,7 @@ and **auto-repair** (default on) tries it ~30 s after a wedge.
 ps -axo pid,%cpu,command | grep com.apple.fskit.msdos | grep -v grep
 
 # Is the disk still physically there (just unmounted)?
-diskutil list            # look for a tiny volume named SDRGB / USBDOT, note its diskN
+diskutil list            # look for a tiny volume named SidePulse, note its diskN
 
 # Safe volume listing (NEVER `ls -la /Volumes` while wedged — it stats into the
 # mount and hangs). Names only:
@@ -67,7 +67,7 @@ diskutil list
    unsticks within a few seconds.
 2. **Remount** — the card stays present as a raw disk after the kill:
    `diskutil mount disk7` (use the identifier from `diskutil list`), or
-   `diskutil mount SDRGB`. `/Volumes/SDRGB` comes back.
+   `diskutil mount SidePulse`. `/Volumes/SidePulse` comes back.
 
 You do **not** need to replug or power-cycle. (There's no supported way to
 power-cycle the built-in SD-reader slot from macOS anyway; `eject` just logically

@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// A lightweight, scrollable viewer for the LEDS.TXT DSL reference. Renders
-/// headings, prose (with inline markdown), and fenced code blocks.
+/// A lightweight, scrollable viewer for the LEDS.LED DSL reference. Renders
+/// headings, prose (with inline markdown), and code blocks — both fenced and
+/// four-space indented (the spec's preamble uses the indented form for its shell
+/// examples, which would otherwise be swallowed into the surrounding paragraph).
 struct SpecView: View {
     private let blocks = SpecView.parse(SpecText.content)
 
@@ -24,7 +26,7 @@ struct SpecView: View {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             DispatchQueue.main.async {
-                NSApp.windows.first { $0.title == "LEDS.TXT Format" }?
+                NSApp.windows.first { $0.title == SpecWindow.title }?
                     .makeKeyAndOrderFront(nil)
             }
         }
@@ -40,6 +42,8 @@ struct SpecView: View {
             Text(text).font(.title.bold()).padding(.top, 4)
         case .h2(let text):
             Text(text).font(.title3.bold()).padding(.top, 6)
+        case .h3(let text):
+            Text(text).font(.headline).padding(.top, 4)
         case .paragraph(let text):
             Text(markdown(text)).font(.body)
         case .code(let text):
@@ -61,20 +65,36 @@ struct SpecView: View {
     // MARK: - Tiny markdown parser
 
     enum Block {
-        case h1(String), h2(String), paragraph(String), code(String)
+        case h1(String), h2(String), h3(String), paragraph(String), code(String)
     }
 
     static func parse(_ source: String) -> [Block] {
         var blocks: [Block] = []
         var inCode = false
         var codeBuffer: [String] = []
+        var indentBuffer: [String] = []
         var paraBuffer: [String] = []
+
+        func leadingSpaces(_ line: String) -> Int { line.prefix { $0 == " " }.count }
+        func isBlank(_ line: String) -> Bool { line.trimmingCharacters(in: .whitespaces).isEmpty }
 
         func flushParagraph() {
             if !paraBuffer.isEmpty {
                 blocks.append(.paragraph(paraBuffer.joined(separator: " ")))
                 paraBuffer = []
             }
+        }
+
+        /// Emit a pending indented block, dedented by its own smallest indent (the
+        /// spec mixes 4- and 5-space examples). Trailing blank lines belong to
+        /// whatever follows, not to the code.
+        func flushIndented() {
+            while let last = indentBuffer.last, isBlank(last) { indentBuffer.removeLast() }
+            guard !indentBuffer.isEmpty else { return }
+            let minIndent = indentBuffer.filter { !isBlank($0) }.map(leadingSpaces).min() ?? 0
+            let dedented = indentBuffer.map { String($0.dropFirst(min(minIndent, leadingSpaces($0)))) }
+            blocks.append(.code(dedented.joined(separator: "\n")))
+            indentBuffer = []
         }
 
         for line in source.components(separatedBy: "\n") {
@@ -84,17 +104,33 @@ struct SpecView: View {
                     codeBuffer = []
                     inCode = false
                 } else {
+                    flushIndented()
                     flushParagraph()
                     inCode = true
                 }
                 continue
             }
             if inCode { codeBuffer.append(line); continue }
+
+            let indented = line.hasPrefix("    ") && !isBlank(line)
+            if !indentBuffer.isEmpty {
+                // Blank lines don't end an indented block; the next flush trims them.
+                if indented || isBlank(line) { indentBuffer.append(line); continue }
+                flushIndented()
+            } else if indented, paraBuffer.isEmpty {
+                // Only start one at the top level, never mid-paragraph — otherwise a
+                // wrapped prose line that happens to be indented would become code.
+                indentBuffer.append(line)
+                continue
+            }
+
+            if line.hasPrefix("### ") { flushParagraph(); blocks.append(.h3(String(line.dropFirst(4)))); continue }
             if line.hasPrefix("## ") { flushParagraph(); blocks.append(.h2(String(line.dropFirst(3)))); continue }
             if line.hasPrefix("# ") { flushParagraph(); blocks.append(.h1(String(line.dropFirst(2)))); continue }
-            if line.trimmingCharacters(in: .whitespaces).isEmpty { flushParagraph(); continue }
+            if isBlank(line) { flushParagraph(); continue }
             paraBuffer.append(line)
         }
+        flushIndented()
         flushParagraph()
         if inCode, !codeBuffer.isEmpty { blocks.append(.code(codeBuffer.joined(separator: "\n"))) }
         return blocks
