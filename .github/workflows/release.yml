@@ -61,10 +61,18 @@ jobs:
           rm -f "$RUNNER_TEMP/ac.p8" build/SidePulse-notarize.zip
           ditto -c -k --keepParent build/SidePulse.app build/SidePulse.zip
 
+      # scripts/release.sh does the whole build-notarize-publish locally and then
+      # pushes the tag, which fires this workflow at a release that already
+      # exists. Publishing anyway would either fail the run or replace hand-written
+      # notes with generated ones, so a release that is already there wins.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "::notice::${GITHUB_REF_NAME} was already published (likely by scripts/release.sh); leaving it alone."
+            exit 0
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             --prerelease \
             --title "SidePulse ${GITHUB_REF_NAME}" \
